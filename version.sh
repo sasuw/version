@@ -59,8 +59,21 @@ if ! id versionchecker &>/dev/null; then
     echo "versionchecker user setup completed"
 fi
 
-# Check if user has execute permission
-program_path=$(which "$PROGRAM")
+# Resolve program path, handling python and similar cases
+program_path=""
+if command -v "$PROGRAM" &> /dev/null; then
+    program_path=$(command -v "$PROGRAM")
+elif command -v "${PROGRAM}3" &> /dev/null; then  # Try with '3' suffix for python, ruby etc.
+    program_path=$(command -v "${PROGRAM}3")
+else
+    if $SHORT_OUTPUT; then
+        echo "${PROGRAM_BASE} not-found"
+    else
+        echo "Error: Program '$PROGRAM' not found"
+    fi
+    exit 1
+fi
+
 # Check permissions for both current user and versionchecker
 if ! ( [ -x "$program_path" ] && [ -r "$program_path" ] ) || \
    ! sudo -u versionchecker test -x "$program_path" || \
@@ -215,34 +228,36 @@ for flag in "${VERSION_FLAGS[@]}"; do
 done
 
 # 2. Try to find version flag from help output
-# For help output check:
+help_output=""
 if help_output=$(timeout 1s sudo -u versionchecker bash -c "
     unset DISPLAY
     unset WAYLAND_DISPLAY
     unset XAUTHORITY
     unset SESSION_MANAGER
     unset DBUS_SESSION_BUS_ADDRESS
-    \"$PROGRAM\" --help") 2>&1 || \
+    \"$PROGRAM\" --help" 2>&1) || \
    help_output=$(timeout 1s sudo -u versionchecker bash -c "
     unset DISPLAY
     unset WAYLAND_DISPLAY
     unset XAUTHORITY
     unset SESSION_MANAGER
     unset DBUS_SESSION_BUS_ADDRESS
-    \"$PROGRAM\" -h") 2>&1; then
-#if help_output=$(timeout 1s "$PROGRAM" --help 2>&1) || help_output=$(timeout 1s "$PROGRAM" -h 2>&1); then
-    if version_flag=$(extract_version_flag_from_help "$help_output"); then
-        if output=$(try_version_flag "$PROGRAM" "$version_flag" "$PROGRAM_BASE"); then
-            if $SHORT_OUTPUT; then
-                version=$(extract_version "$output")
-                if [ -n "$version" ]; then
-                    echo "${PROGRAM_BASE} ${version}"
+    \"$PROGRAM\" -h" 2>&1); then
+    # Only process help output if it doesn't contain error messages
+    if ! echo "$help_output" | grep -q "unrecognized option\|invalid option"; then
+        if version_flag=$(extract_version_flag_from_help "$help_output"); then
+            if output=$(try_version_flag "$PROGRAM" "$version_flag" "$PROGRAM_BASE"); then
+                if $SHORT_OUTPUT; then
+                    version=$(extract_version "$output")
+                    if [ -n "$version" ]; then
+                        echo "${PROGRAM_BASE} ${version}"
+                        exit 0
+                    fi
+                else
+                    echo "Version information (found flag '$version_flag' in help):"
+                    echo "$output"
                     exit 0
                 fi
-            else
-                echo "Version information (found flag '$version_flag' in help):"
-                echo "$output"
-                exit 0
             fi
         fi
     fi

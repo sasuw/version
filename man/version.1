@@ -1,0 +1,68 @@
+.TH VERSION 1 "2024" "Linux" "User Commands"
+.SH NAME
+version \- determine version information of executables
+.SH SYNOPSIS
+.B version
+[\fB\-s\fR|\fB\-\-short\fR] \fIprogram\fR
+.SH DESCRIPTION
+.B version
+attempts to determine the version of an executable program using various methods.
+It tries different version flags, checks package information, and analyzes binary strings
+to find version information.
+.PP
+The script runs programs in a safe manner using a dedicated unprivileged user and
+prevents any GUI-related interactions.
+.SH OPTIONS
+.TP
+.BR \-s ", " \-\-short
+Output only the program name and version number in format "program version".
+If version cannot be determined, outputs "program undetermined".
+If program is GUI-based, outputs "program gui-program".
+If program lacks permissions, outputs "program no-permission".
+.SH "VERSION DETECTION METHODS"
+The script attempts to find version information in the following order:
+.PP
+.IP 1. 4
+Common version flags (--version, -version, -v, -V, --ver, -ver, version)
+.IP 2. 4
+Analysis of --help output to find version flags
+.IP 3. 4
+Package management system (dpkg) query
+.IP 4. 4
+Binary string analysis
+.IP 5. 4
+Execution without arguments
+.SH "SECURITY FEATURES"
+.IP \[bu] 2
+Uses dedicated unprivileged user 'versionchecker'
+.IP \[bu] 2
+Unsets display-related environment variables
+.IP \[bu] 2
+Implements command timeout
+.IP \[bu] 2
+Checks executable permissions
+.SH EXAMPLES
+.TP
+Check Python version:
+.B version python
+.TP
+Get short version output for git:
+.B version -s git
+.TP
+Check version of a GUI program:
+.B version firefox
+.SH "EXIT STATUS"
+.TP
+.B 0
+Version information was successfully determined
+.TP
+.B 1
+Version information could not be determined or error occurred
+.SH AUTHOR
+Written by [Your Name]
+.SH BUGS
+Report bugs to [Your Bug Report URL/Email]
+.SH COPYRIGHT
+Copyright \(co 2024 [Your Name/Organization]
+.br
+License [Your License]
