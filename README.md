@@ -24,9 +24,13 @@ A command-line tool to determine version information of command line executable 
 
 #### Install pre-requisites
 
+`git clone` this project with
 ```bash
-`git clone` this project with `git clone https://github.com/sasuw/version`
-`cd version/scripts`
+git clone https://github.com/sasuw/version
+```
+`cd` yourselfo to the scripts directory
+```bash
+cd version/scripts
 ```
 
 ### MacOS
