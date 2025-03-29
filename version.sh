@@ -33,13 +33,42 @@ if [ -z "$PROGRAM" ]; then
     show_usage
 fi
 
+# Check and setup versionchecker user if needed
+if ! id versionchecker &>/dev/null; then
+    echo "versionchecker user not found. Setting up..."
+    if ! command -v sudo &>/dev/null; then
+        echo "Error: sudo is not available. Please run these commands as root:"
+        echo "useradd -r -s /bin/false versionchecker"
+        echo "echo 'ALL ALL=(versionchecker) NOPASSWD: /bin/bash' > /etc/sudoers.d/versionchecker"
+        exit 1
+    fi
+    
+    # Try to create user and sudoers entry
+    if ! sudo useradd -r -s /bin/false versionchecker; then
+        echo "Error: Failed to create versionchecker user"
+        exit 1
+    fi
+    
+    if ! echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null; then
+        echo "Error: Failed to create sudoers entry"
+        # Clean up user if sudoers fails
+        sudo userdel versionchecker
+        exit 1
+    fi
+    
+    echo "versionchecker user setup completed"
+fi
+
 # Check if user has execute permission
 program_path=$(which "$PROGRAM")
-if ! [ -x "$program_path" ] || ! [ -r "$program_path" ]; then
+# Check permissions for both current user and versionchecker
+if ! ( [ -x "$program_path" ] && [ -r "$program_path" ] ) || \
+   ! sudo -u versionchecker test -x "$program_path" || \
+   ! sudo -u versionchecker test -r "$program_path"; then
     if $SHORT_OUTPUT; then
         echo "${PROGRAM_BASE} no-permission"
     else
-        echo "Error: No permission to execute '$PROGRAM'"
+        echo "Error: No permission to execute '$PROGRAM' (either as current user or versionchecker)"
     fi
     exit 1
 fi
