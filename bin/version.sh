@@ -1,8 +1,22 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # version.sh - Find version information for CLI programs
 
-#!/bin/bash
+readonly TIMEOUT_SECONDS=1s
+VERSION="1.0.0"
+SCRIPT_NAME=$(basename "$0")
+
+# Function to show version
+show_version() {
+    echo "${SCRIPT_NAME} ${VERSION}"
+    exit 0
+}
+
+# Cleanup temp file
+cleanup() {
+    local tmpfile="${1:-}"
+    [ -n "$tmpfile" ] && [ -f "$tmpfile" ] && rm -f "$tmpfile"
+}
 
 # Function to determine OS type
 get_os_type() {
@@ -63,7 +77,7 @@ setup_versionchecker() {
     if ! command -v sudo &>/dev/null; then
         echo "Error: sudo is not available"
         exit 1
-    }
+    fi
 
     case "$(get_os_type)" in
         "linux")
@@ -129,6 +143,37 @@ timeout_cmd() {
     esac
 }
 
+# Function to check if output contains version information
+contains_version_info() {
+    local output="$1"
+    local program_base="$2"
+    
+    # Check for program name followed by version-like string
+    if echo "$output" | grep -iE "^${program_base}[[:space:]]+(v[0-9]+|[0-9]+(\.[0-9]+)*)" > /dev/null; then
+        return 0
+    fi
+    
+    # Check for common version patterns
+    if echo "$output" | grep -iE "version|v[0-9]" > /dev/null; then
+        return 0
+    fi
+
+    # Check for "compiled with" or "linked with" followed by version
+    if echo "$output" | grep -iE "(compiled|linked).+[0-9]+\.[0-9]+\.[0-9]+" > /dev/null; then
+        return 0
+    fi
+
+    # Last resort: look for X.Y.Z pattern
+    # Count how many unique version-like strings we find
+    local version_count=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u | wc -l)
+    if [ "$version_count" -eq 1 ]; then
+        # If we found exactly one X.Y.Z pattern, consider it a version
+        return 0
+    fi
+    
+    return 1
+}
+
 # Modify the try_version_flag function to use the system-specific shell
 try_version_flag() {
     local program="$1"
@@ -137,10 +182,15 @@ try_version_flag() {
     local system_shell=$(get_system_shell)
     
     # Create a temporary file for output
-    local tmpfile=$(mktemp)
+    local tmpfile
+    tmpfile=$(mktemp) || {
+        echo "Failed to create temporary file" >&2
+        return 1
+    }
+    trap 'cleanup "$tmpfile"' EXIT
     
     # Run the command with timeout and as versionchecker user
-    if timeout_cmd 1s sudo -u versionchecker "$system_shell" -c "
+    if timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker "$system_shell" -c "
         unset DISPLAY
         unset WAYLAND_DISPLAY
         unset XAUTHORITY
@@ -182,12 +232,37 @@ esac
 # Setup versionchecker user if needed
 setup_versionchecker
 
-# Function to show usage
 show_usage() {
-    echo "Usage: $0 [-s|--short] <program-name>"
-    echo "Options:"
-    echo "  -s, --short    Output only program name and version number"
-    exit 1
+    cat << EOF
+${SCRIPT_NAME} - Find version information for CLI programs
+
+Usage: ${SCRIPT_NAME} [-s|--short] <program-name>
+       ${SCRIPT_NAME} [-h|--help]
+       ${SCRIPT_NAME} [-v|--version]
+
+Options:
+  -s, --short     Output only program name and version number
+  -h, --help      Display this help message
+  -v, --version   Display version information
+
+Examples:
+  ${SCRIPT_NAME} python
+  ${SCRIPT_NAME} --short git
+  ${SCRIPT_NAME} /usr/local/bin/node
+
+The script will try various methods to determine the version:
+1. Common version flags (--version, -v, etc.)
+2. Help output analysis
+3. Package manager information
+4. Binary string analysis
+5. No-argument execution
+
+Exit codes:
+  0  Success
+  1  General error
+  2  Invalid usage
+EOF
+    exit 0
 }
 
 # Parse arguments
@@ -196,11 +271,27 @@ PROGRAM=""
 
 while (( $# > 0 )); do
     case "$1" in
+        -h|--help)
+            show_usage
+            ;;
+        -v|--version)
+            show_version
+            ;;
         -s|--short)
             SHORT_OUTPUT=true
             shift
             ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            echo "Try '${SCRIPT_NAME} --help' for more information." >&2
+            exit 2
+            ;;
         *)
+            if [ -n "$PROGRAM" ]; then
+                echo "Error: Only one program name can be specified" >&2
+                echo "Try '${SCRIPT_NAME} --help' for more information." >&2
+                exit 2
+            fi
             PROGRAM="$1"
             PROGRAM_BASE=$(basename "$PROGRAM")
             shift
@@ -211,32 +302,6 @@ done
 # Check if a program name was provided
 if [ -z "$PROGRAM" ]; then
     show_usage
-fi
-
-# Check and setup versionchecker user if needed
-if ! id versionchecker &>/dev/null; then
-    echo "versionchecker user not found. Setting up..."
-    if ! command -v sudo &>/dev/null; then
-        echo "Error: sudo is not available. Please run these commands as root:"
-        echo "useradd -r -s /bin/false versionchecker"
-        echo "echo 'ALL ALL=(versionchecker) NOPASSWD: /bin/bash' > /etc/sudoers.d/versionchecker"
-        exit 1
-    fi
-    
-    # Try to create user and sudoers entry
-    if ! sudo useradd -r -s /bin/false versionchecker; then
-        echo "Error: Failed to create versionchecker user"
-        exit 1
-    fi
-    
-    if ! echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null; then
-        echo "Error: Failed to create sudoers entry"
-        # Clean up user if sudoers fails
-        sudo userdel versionchecker
-        exit 1
-    fi
-    
-    echo "versionchecker user setup completed"
 fi
 
 # Resolve program path, handling python and similar cases
@@ -290,39 +355,6 @@ VERSION_FLAGS=(
     "version"
 )
 
-# Function to check if output contains version information
-contains_version_info() {
-    local output="$1"
-    local program_base="$2"
-    
-    # Check for program name followed by version-like string
-    if echo "$output" | grep -iE "^${program_base}[[:space:]]+(v[0-9]+|[0-9]+(\.[0-9]+)*)" > /dev/null; then
-        return 0
-    fi
-    
-    # Check for common version patterns
-    if echo "$output" | grep -iE "version|v[0-9]" > /dev/null; then
-        return 0
-    fi
-
-    # Check for "compiled with" or "linked with" followed by version
-    if echo "$output" | grep -iE "(compiled|linked).+[0-9]+\.[0-9]+\.[0-9]+" > /dev/null; then
-        return 0
-    fi
-
-    # Last resort: look for X.Y.Z pattern
-    # Count how many unique version-like strings we find
-    local version_count=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u | wc -l)
-    if [ "$version_count" -eq 1 ]; then
-        # If we found exactly one X.Y.Z pattern, consider it a version
-        return 0
-    fi
-    
-    return 1
-}
-
-
-
 # Function to extract version number from output
 extract_version() {
     local output="$1"
@@ -375,14 +407,14 @@ done
 
 # 2. Try to find version flag from help output
 help_output=""
-if help_output=$(timeout 1s sudo -u versionchecker bash -c "
+if help_output=$(timeout $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
     unset DISPLAY
     unset WAYLAND_DISPLAY
     unset XAUTHORITY
     unset SESSION_MANAGER
     unset DBUS_SESSION_BUS_ADDRESS
     \"$PROGRAM\" --help" 2>&1) || \
-   help_output=$(timeout 1s sudo -u versionchecker bash -c "
+   help_output=$(timeout $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
     unset DISPLAY
     unset WAYLAND_DISPLAY
     unset XAUTHORITY

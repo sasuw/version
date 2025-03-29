@@ -1,6 +1,6 @@
 # version.sh
 
-A robust command-line tool to determine version information of command line executable programs on Linux, *BSD and MacOS.
+A command-line tool to determine version information of command line executable programs on Linux, *BSD and MacOS. No more guessing, is it `-version`, `--version`, `-V` or even just `version`!
 
 ## Features
 
@@ -19,6 +19,15 @@ A robust command-line tool to determine version information of command line exec
   - Short format showing just program and version
 
 ## Installation
+
+### All platforms
+
+#### Install pre-requisites
+
+```bash
+`git clone` this project with `git clone https://github.com/sasuw/version`
+`cd version/scripts`
+```
 
 ### MacOS
 
@@ -39,6 +48,8 @@ sudo ./install.sh
 ```bash
 sudo ./install.sh
 ```
+
+### All platforms
 To uninstall:
 
 ```bash
@@ -46,6 +57,19 @@ sudo ./install.sh --uninstall
 ```
 
 ## Usage
+
+The script can be used in two ways:
+
+1. Full command:
+```bash
+version python3
+version --short python3
+```
+2. Quick alias:
+```bash
+vv python3  # equivalent to 'version --short python3'
+```
+
 Basic usage:
 
 ```bash
@@ -120,7 +144,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
  If you have an issue with `version` not working for a specific program, please specify the OS, the program version and how to install it or find it if it is not a part of the OS default programs.
 
 ## License
-[Your chosen license]
+MIT License
 
 ## Author
 Sasu Welling

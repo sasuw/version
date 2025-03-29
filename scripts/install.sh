@@ -2,6 +2,119 @@
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
+# Function to add alias to shell config files
+add_alias() {
+    local alias_line="alias vv='version -s'"
+    local real_user=$(get_real_user)
+    local user_home
+    
+    case "$(get_os_type)" in
+        "linux"|"freebsd")
+            user_home=$(getent passwd "$real_user" | cut -d: -f6)
+            ;;
+        "macos")
+            user_home=$(dscl . -read "/Users/$real_user" NFSHomeDirectory | awk '{print $2}')
+            ;;
+    esac
+
+    # Common shell config files
+    local config_files=(
+        "$user_home/.bashrc"
+        "$user_home/.zshrc"
+        "$user_home/.config/fish/config.fish"
+    )
+
+    echo "Adding 'vv' alias for user $real_user..."
+    
+    for config_file in "${config_files[@]}"; do
+        # Create parent directory if it doesn't exist (for fish config)
+        if [[ "$config_file" == *"config.fish"* ]]; then
+            mkdir -p "$(dirname "$config_file")"
+        fi
+        
+        # If file exists and alias not already present
+        if [ -f "$config_file" ] && ! grep -q "alias vv=" "$config_file"; then
+            # Check if file ends with newline
+            if [ -s "$config_file" ] && [ "$(tail -c1 "$config_file" | wc -l)" -eq 0 ]; then
+                # File doesn't end with newline, add one
+                echo "" >> "$config_file"
+            fi
+            
+            case "$config_file" in
+                *.fish)
+                    echo "alias vv 'version -s'" >> "$config_file"
+                    ;;
+                *)
+                    echo "$alias_line" >> "$config_file"
+                    ;;
+            esac
+            echo "Added alias to $config_file"
+        # If file doesn't exist, create it with the alias
+        elif [ ! -f "$config_file" ]; then
+            case "$config_file" in
+                *.fish)
+                    echo "alias vv 'version -s'" > "$config_file"
+                    ;;
+                *)
+                    echo "$alias_line" > "$config_file"
+                    ;;
+            esac
+            echo "Created $config_file with alias"
+        fi
+    done
+
+    # Set proper ownership
+    chown -R "$real_user:$(id -gn "$real_user")" "$user_home/.config" 2>/dev/null || true
+    for config_file in "${config_files[@]}"; do
+        if [ -f "$config_file" ]; then
+            chown "$real_user:$(id -gn "$real_user")" "$config_file"
+        fi
+    done
+
+    echo "Alias 'vv' has been added to shell configuration files"
+    echo "Please restart your shell or run 'source ~/.bashrc' (or equivalent) to use the alias"
+}
+
+# Function to remove alias during uninstall
+remove_alias() {
+    local real_user=$(get_real_user)
+    local user_home
+    
+    case "$(get_os_type)" in
+        "linux"|"freebsd")
+            user_home=$(getent passwd "$real_user" | cut -d: -f6)
+            ;;
+        "macos")
+            user_home=$(dscl . -read "/Users/$real_user" NFSHomeDirectory | awk '{print $2}')
+            ;;
+    esac
+
+    local config_files=(
+        "$user_home/.bashrc"
+        "$user_home/.zshrc"
+        "$user_home/.config/fish/config.fish"
+    )
+
+    echo "Removing 'vv' alias..."
+    
+    for config_file in "${config_files[@]}"; do
+        if [ -f "$config_file" ]; then
+            case "$config_file" in
+                *.fish)
+                    sed -i.bak '/alias vv '"'"'version -s'"'"'/d' "$config_file" 2>/dev/null || \
+                    sed -i '' '/alias vv '"'"'version -s'"'"'/d' "$config_file" 2>/dev/null
+                    ;;
+                *)
+                    sed -i.bak '/alias vv='"'"'version -s'"'"'/d' "$config_file" 2>/dev/null || \
+                    sed -i '' '/alias vv='"'"'version -s'"'"'/d' "$config_file" 2>/dev/null
+                    ;;
+            esac
+            rm -f "${config_file}.bak"
+            echo "Removed alias from $config_file"
+        fi
+    done
+}
+
 # Function to get the real user when running with sudo
 get_real_user() {
     if [ -n "$SUDO_USER" ]; then
@@ -189,8 +302,12 @@ main() {
     
     # Verify installation
     if verify_installation; then
+        # Add the alias
+        add_alias
+        
         echo "Installation completed successfully!"
         echo "You can now use 'version' command and access its man page with 'man version'"
+        echo "The alias 'vv' has been added for quick version checks (requires shell restart)"
     else
         echo "Installation completed with errors. Please check the messages above."
         exit 1
@@ -232,6 +349,7 @@ if [ "$1" = "--uninstall" ]; then
             ;;
     esac
     
+    remove_alias
     echo "Uninstallation completed"
     exit 0
 fi
