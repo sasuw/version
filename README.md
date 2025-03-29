@@ -1,40 +1,48 @@
 # version.sh
 
-A robust command-line tool to determine version information of executable programs on Linux systems.
+A robust command-line tool to determine version information of command line executable programs on Linux, *BSD and MacOS.
 
 ## Features
 
-- Multiple version detection methods:
-  - Common version flags (--version, -v, etc.)
+### Multiple version detection methods
+  - Common version flags (`--version`, `-v`, etc.)
   - Help output analysis
-  - Package management (dpkg) query
+  - Package management query
   - Binary string analysis
-- Safe execution:
+### Safe execution
   - Uses dedicated unprivileged user
   - Prevents GUI program execution
   - Implements command timeout
   - Checks executable permissions
-- Two output formats:
+### Two output formats
   - Detailed with version information source
   - Short format showing just program and version
 
 ## Installation
 
-1. Clone the repository:
+### MacOS
+
+#### Install pre-requisites
+
+*Either* install `timeout` from GNU Coreutils manually in your chosen way *or* install Homebrew if not already installed (so that install script installs the missing dependency if necessary)
 ```bash
-git clone https://github.com/yourusername/version.sh.git
-chmod +x version.sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
-First run will automatically set up the required unprivileged user (requires sudo):
+
+#### Then run the installer with sudo
 ```bash
-./version.sh --help
+sudo ./install.sh
 ```
-Optionally install the man page:
+
+### Linux/FreeBSD
+
 ```bash
-sudo mkdir -p /usr/local/share/man/man1
-sudo cp version.1 /usr/local/share/man/man1/
-sudo gzip /usr/local/share/man/man1/version.1
-sudo mandb
+sudo ./install.sh
+```
+To uninstall:
+
+```bash
+sudo ./install.sh --uninstall
 ```
 
 ## Usage
@@ -80,8 +88,8 @@ unknown-version undetermined
 ## How It Works
 The script attempts to determine program versions using these methods, in order:
 - Tries common version flags
-- Analyzes --help output for version flags
-- Queries package management system (dpkg)
+- Analyzes `--help` output for version flags
+- Queries package management system (currently only `dpkg` on Linux)
 - Analyzes binary strings
 - Attempts execution without arguments
 
@@ -97,20 +105,25 @@ All program executions are performed as unprivileged 'versionchecker' user
 - Checks executable permissions for both current user and versionchecker
 - Safely handles program output and error conditions
 
-## Requirements
-- Linux system
-- Bash shell
-- sudo access (for initial setup)
-- common utilities: grep, timeout, sudo, dpkg (optional)
+## System Requirements
+
+- Linux (Debian/RedHat based), MacOS, or FreeBSD
+- Root/sudo access for installation (to add dedicated `versionchecker` user for more security)
+- GNU coreutils (for timeout command)
+  - Installed by default on Linux
+  - Installed via `Homebrew` on MacOS
+  - Installed via `pkg` on FreeBSD
 
 ## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+ If you have an issue with `version` not working for a specific program, please specify the OS, the program version and how to install it or find it if it is not a part of the OS default programs.
 
 ## License
 [Your chosen license]
 
 ## Author
-[Your name]
+Sasu Welling
 
 ## Bugs
-Report bugs at [your issue tracker URL]
+Report bugs by adding a new issue.
