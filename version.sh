@@ -2,6 +2,140 @@
 
 # version.sh - Find version information for CLI programs
 
+#!/bin/bash
+
+# Function to check if we're running on MacOS
+is_macos() {
+    [ "$(uname)" = "Darwin" ]
+}
+
+# Function to get package version (system specific)
+get_package_version() {
+    local program="$1"
+    local version=""
+    
+    if is_macos; then
+        # Try Homebrew first
+        if command -v brew &>/dev/null; then
+            # Get the formula name if it's a Homebrew package
+            local formula=$(brew list | grep -E "^${program}(@[0-9.]+)?$" | head -n1)
+            if [ -n "$formula" ]; then
+                version=$(brew info --json=v2 "$formula" | grep -o '"version": "[^"]*"' | cut -d'"' -f4)
+            fi
+        fi
+        
+        # Try MacPorts if Homebrew failed
+        if [ -z "$version" ] && command -v port &>/dev/null; then
+            version=$(port installed "$program" 2>/dev/null | grep -v "None of the specified ports" | grep active | awk '{print $2}')
+        fi
+    else
+        # Linux: Try dpkg
+        if command -v dpkg &>/dev/null; then
+            version=$(dpkg -l "$program" 2>/dev/null | grep "^ii" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
+        fi
+    fi
+    
+    echo "$version"
+}
+
+# Function to create versionchecker user (system specific)
+setup_versionchecker() {
+    if is_macos; then
+        if ! dscl . -read /Users/versionchecker &>/dev/null; then
+            echo "versionchecker user not found. Setting up..."
+            if ! command -v sudo &>/dev/null; then
+                echo "Error: sudo is not available"
+                exit 1
+            }
+            
+            # Create user on MacOS
+            sudo dscl . -create /Users/versionchecker
+            sudo dscl . -create /Users/versionchecker UserShell /bin/false
+            sudo dscl . -create /Users/versionchecker RealName "Version Checker"
+            sudo dscl . -create /Users/versionchecker UniqueID 401  # Choose an unused ID
+            sudo dscl . -create /Users/versionchecker PrimaryGroupID 20  # staff group
+            
+            # Create sudoers entry
+            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
+        fi
+    else
+        # Linux setup
+        if ! id versionchecker &>/dev/null; then
+            echo "versionchecker user not found. Setting up..."
+            if ! command -v sudo &>/dev/null; then
+                echo "Error: sudo is not available"
+                exit 1
+            }
+            
+            sudo useradd -r -s /bin/false versionchecker
+            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
+        fi
+    fi
+}
+
+# Modify timeout command for MacOS compatibility
+timeout_cmd() {
+    if is_macos; then
+        if command -v gtimeout &>/dev/null; then
+            gtimeout "$@"
+        else
+            echo "Please install GNU timeout: brew install coreutils" >&2
+            exit 1
+        fi
+    else
+        timeout "$@"
+    fi
+}
+
+# Modify the try_version_flag function to use the new timeout_cmd
+try_version_flag() {
+    local program="$1"
+    local flag="$2"
+    local program_base="$3"
+    
+    # Create a temporary file for output
+    local tmpfile=$(mktemp)
+    
+    # Run the command with timeout and as versionchecker user
+    if timeout_cmd 1s sudo -u versionchecker bash -c "
+        unset DISPLAY
+        unset WAYLAND_DISPLAY
+        unset XAUTHORITY
+        unset SESSION_MANAGER
+        unset DBUS_SESSION_BUS_ADDRESS
+        \"$program\" $flag" > "$tmpfile" 2>&1; then
+        local output=$(cat "$tmpfile")
+        rm "$tmpfile"
+        
+        # Check if output contains version-like information
+        if contains_version_info "$output" "$program_base"; then
+            echo "$output"
+            return 0
+        fi
+    else
+        # Clean up and check if it was a timeout
+        local exit_code=$?
+        rm "$tmpfile"
+        if [ $exit_code -eq 124 ]; then  # timeout exit code
+            return 2
+        fi
+    fi
+    return 1
+}
+
+# Main script logic
+# First, check requirements
+if is_macos; then
+    if ! command -v gtimeout &>/dev/null; then
+        echo "GNU timeout not found. Please install coreutils:"
+        echo "brew install coreutils"
+        exit 1
+    fi
+fi
+
+# Setup versionchecker user if needed
+setup_versionchecker
+
 # Function to show usage
 show_usage() {
     echo "Usage: $0 [-s|--short] <program-name>"
@@ -141,41 +275,7 @@ contains_version_info() {
     return 1
 }
 
-# Function to try a version flag with timeout
-try_version_flag() {
-    local program="$1"
-    local flag="$2"
-    local program_base="$3"
-    
-    # Create a temporary file for output
-    local tmpfile=$(mktemp)
-    
-    # Run the command with timeout and as versionchecker user
-    if timeout 1s sudo -u versionchecker bash -c "
-        unset DISPLAY
-        unset WAYLAND_DISPLAY
-        unset XAUTHORITY
-        unset SESSION_MANAGER
-        unset DBUS_SESSION_BUS_ADDRESS
-        \"$program\" $flag" > "$tmpfile" 2>&1; then
-        local output=$(cat "$tmpfile")
-        rm "$tmpfile"
-        
-        # Check if output contains version-like information
-        if contains_version_info "$output" "$program_base"; then
-            echo "$output"
-            return 0
-        fi
-    else
-        # Clean up and check if it was a timeout
-        local exit_code=$?
-        rm "$tmpfile"
-        if [ $exit_code -eq 124 ]; then  # timeout exit code
-            return 2
-        fi
-    fi
-    return 1
-}
+
 
 # Function to extract version number from output
 extract_version() {
