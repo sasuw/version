@@ -1,5 +1,7 @@
 #!/bin/bash
 
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+
 # Function to get the real user when running with sudo
 get_real_user() {
     if [ -n "$SUDO_USER" ]; then
@@ -106,11 +108,11 @@ install_program() {
     mkdir -p "$man_dir"
     
     # Install program
-    cp version.sh "$install_dir/version"
+    cp "$SCRIPT_DIR/../bin/version.sh" "$install_dir/version"
     chmod 755 "$install_dir/version"
     
     # Install and compress man page
-    cp docs/man/version.1 "$man_dir/version.1"
+    cp "$SCRIPT_DIR/../doc/man/version.1" "$man_dir/version.1"
     gzip -f "$man_dir/version.1"
     
     # Update man database if needed
