@@ -4,9 +4,24 @@
 
 #!/bin/bash
 
-# Function to check if we're running on MacOS
-is_macos() {
-    [ "$(uname)" = "Darwin" ]
+# Function to determine OS type
+get_os_type() {
+    case "$(uname)" in
+        "Linux")   echo "linux" ;;
+        "Darwin")  echo "macos" ;;
+        "FreeBSD") echo "freebsd" ;;
+        *)         echo "unknown" ;;
+    esac
+}
+
+# Function to check package manager availability
+have_pkg_manager() {
+    case "$(get_os_type)" in
+        "linux")   command -v dpkg &>/dev/null ;;
+        "macos")   command -v brew &>/dev/null || command -v port &>/dev/null ;;
+        "freebsd") command -v pkg &>/dev/null ;;
+        *)         return 1 ;;
+    esac
 }
 
 # Function to get package version (system specific)
@@ -14,90 +29,118 @@ get_package_version() {
     local program="$1"
     local version=""
     
-    if is_macos; then
-        # Try Homebrew first
-        if command -v brew &>/dev/null; then
-            # Get the formula name if it's a Homebrew package
-            local formula=$(brew list | grep -E "^${program}(@[0-9.]+)?$" | head -n1)
-            if [ -n "$formula" ]; then
-                version=$(brew info --json=v2 "$formula" | grep -o '"version": "[^"]*"' | cut -d'"' -f4)
+    case "$(get_os_type)" in
+        "linux")
+            if command -v dpkg &>/dev/null; then
+                version=$(dpkg -l "$program" 2>/dev/null | grep "^ii" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
             fi
-        fi
-        
-        # Try MacPorts if Homebrew failed
-        if [ -z "$version" ] && command -v port &>/dev/null; then
-            version=$(port installed "$program" 2>/dev/null | grep -v "None of the specified ports" | grep active | awk '{print $2}')
-        fi
-    else
-        # Linux: Try dpkg
-        if command -v dpkg &>/dev/null; then
-            version=$(dpkg -l "$program" 2>/dev/null | grep "^ii" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
-        fi
-    fi
+            ;;
+            
+        "macos")
+            if command -v brew &>/dev/null; then
+                local formula=$(brew list | grep -E "^${program}(@[0-9.]+)?$" | head -n1)
+                if [ -n "$formula" ]; then
+                    version=$(brew info --json=v2 "$formula" | grep -o '"version": "[^"]*"' | cut -d'"' -f4)
+                fi
+            fi
+            if [ -z "$version" ] && command -v port &>/dev/null; then
+                version=$(port installed "$program" 2>/dev/null | grep -v "None of the specified ports" | grep active | awk '{print $2}')
+            fi
+            ;;
+            
+        "freebsd")
+            if command -v pkg &>/dev/null; then
+                version=$(pkg info "$program" 2>/dev/null | grep -E "^Version" | cut -d: -f2- | tr -d ' ')
+            fi
+            ;;
+    esac
     
     echo "$version"
 }
 
 # Function to create versionchecker user (system specific)
 setup_versionchecker() {
-    if is_macos; then
-        if ! dscl . -read /Users/versionchecker &>/dev/null; then
-            echo "versionchecker user not found. Setting up..."
-            if ! command -v sudo &>/dev/null; then
-                echo "Error: sudo is not available"
-                exit 1
-            }
+    if ! command -v sudo &>/dev/null; then
+        echo "Error: sudo is not available"
+        exit 1
+    }
+
+    case "$(get_os_type)" in
+        "linux")
+            if ! id versionchecker &>/dev/null; then
+                echo "versionchecker user not found. Setting up..."
+                sudo useradd -r -s /bin/false versionchecker
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
+            fi
+            ;;
             
-            # Create user on MacOS
-            sudo dscl . -create /Users/versionchecker
-            sudo dscl . -create /Users/versionchecker UserShell /bin/false
-            sudo dscl . -create /Users/versionchecker RealName "Version Checker"
-            sudo dscl . -create /Users/versionchecker UniqueID 401  # Choose an unused ID
-            sudo dscl . -create /Users/versionchecker PrimaryGroupID 20  # staff group
+        "macos")
+            if ! dscl . -read /Users/versionchecker &>/dev/null; then
+                echo "versionchecker user not found. Setting up..."
+                sudo dscl . -create /Users/versionchecker
+                sudo dscl . -create /Users/versionchecker UserShell /bin/false
+                sudo dscl . -create /Users/versionchecker RealName "Version Checker"
+                sudo dscl . -create /Users/versionchecker UniqueID 401
+                sudo dscl . -create /Users/versionchecker PrimaryGroupID 20
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
+            fi
+            ;;
             
-            # Create sudoers entry
-            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
-        fi
-    else
-        # Linux setup
-        if ! id versionchecker &>/dev/null; then
-            echo "versionchecker user not found. Setting up..."
-            if ! command -v sudo &>/dev/null; then
-                echo "Error: sudo is not available"
-                exit 1
-            }
-            
-            sudo useradd -r -s /bin/false versionchecker
-            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
-        fi
-    fi
+        "freebsd")
+            if ! pw user show versionchecker >/dev/null 2>&1; then
+                echo "versionchecker user not found. Setting up..."
+                sudo pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" | sudo tee /usr/local/etc/sudoers.d/versionchecker >/dev/null
+            fi
+            ;;
+    esac
 }
 
-# Modify timeout command for MacOS compatibility
+# Function to get system-specific shell
+get_system_shell() {
+    case "$(get_os_type)" in
+        "freebsd") echo "/bin/sh" ;;
+        *)         echo "/bin/bash" ;;
+    esac
+}
+
+# Timeout command wrapper for different systems
 timeout_cmd() {
-    if is_macos; then
-        if command -v gtimeout &>/dev/null; then
-            gtimeout "$@"
-        else
-            echo "Please install GNU timeout: brew install coreutils" >&2
-            exit 1
-        fi
-    else
-        timeout "$@"
-    fi
+    case "$(get_os_type)" in
+        "linux")
+            timeout "$@"
+            ;;
+        "macos")
+            if command -v gtimeout &>/dev/null; then
+                gtimeout "$@"
+            else
+                echo "Please install GNU timeout: brew install coreutils" >&2
+                exit 1
+            fi
+            ;;
+        "freebsd")
+            if command -v gtimeout &>/dev/null; then
+                gtimeout "$@"
+            else
+                echo "Please install GNU timeout: pkg install coreutils" >&2
+                exit 1
+            fi
+            ;;
+    esac
 }
 
-# Modify the try_version_flag function to use the new timeout_cmd
+# Modify the try_version_flag function to use the system-specific shell
 try_version_flag() {
     local program="$1"
     local flag="$2"
     local program_base="$3"
+    local system_shell=$(get_system_shell)
     
     # Create a temporary file for output
     local tmpfile=$(mktemp)
     
     # Run the command with timeout and as versionchecker user
-    if timeout_cmd 1s sudo -u versionchecker bash -c "
+    if timeout_cmd 1s sudo -u versionchecker "$system_shell" -c "
         unset DISPLAY
         unset WAYLAND_DISPLAY
         unset XAUTHORITY
@@ -107,16 +150,14 @@ try_version_flag() {
         local output=$(cat "$tmpfile")
         rm "$tmpfile"
         
-        # Check if output contains version-like information
         if contains_version_info "$output" "$program_base"; then
             echo "$output"
             return 0
         fi
     else
-        # Clean up and check if it was a timeout
         local exit_code=$?
         rm "$tmpfile"
-        if [ $exit_code -eq 124 ]; then  # timeout exit code
+        if [ $exit_code -eq 124 ]; then
             return 2
         fi
     fi
@@ -124,14 +165,19 @@ try_version_flag() {
 }
 
 # Main script logic
-# First, check requirements
-if is_macos; then
-    if ! command -v gtimeout &>/dev/null; then
-        echo "GNU timeout not found. Please install coreutils:"
-        echo "brew install coreutils"
-        exit 1
-    fi
-fi
+# Check requirements first
+case "$(get_os_type)" in
+    "macos"|"freebsd")
+        if ! command -v gtimeout &>/dev/null; then
+            echo "GNU timeout not found. Please install coreutils:"
+            case "$(get_os_type)" in
+                "macos")   echo "brew install coreutils" ;;
+                "freebsd") echo "pkg install coreutils" ;;
+            esac
+            exit 1
+        fi
+        ;;
+esac
 
 # Setup versionchecker user if needed
 setup_versionchecker
