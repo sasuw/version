@@ -23,50 +23,47 @@ A robust command-line tool to determine version information of executable progra
 1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/version.sh.git
-Make the script executable:
-bash
-Copy code
 chmod +x version.sh
+```
 First run will automatically set up the required unprivileged user (requires sudo):
-bash
-Copy code
+```bash
 ./version.sh --help
+```
 Optionally install the man page:
-bash
-Copy code
+```bash
 sudo mkdir -p /usr/local/share/man/man1
 sudo cp version.1 /usr/local/share/man/man1/
 sudo gzip /usr/local/share/man/man1/version.1
 sudo mandb
-Usage
+```
+
+## Usage
 Basic usage:
 
-bash
-Copy code
+```bash
 ./version.sh program_name
+```
 Short output format:
-
-bash
-Copy code
+```bash
 ./version.sh -s program_name
-Examples
+```
+
+## Examples
 Detailed output:
 
-bash
-Copy code
+```bash
 $ ./version.sh python3
 Version information (using --version):
 Python 3.9.5
+```
 Short output:
-
-bash
-Copy code
+```bash
 $ ./version.sh -s git
 git 2.34.1
+```
 Special cases (short format):
 
-bash
-Copy code
+```bash
 $ ./version.sh -s nonexistent
 nonexistent not-found
 
@@ -78,42 +75,42 @@ restricted-program no-permission
 
 $ ./version.sh -s unknown-version
 unknown-version undetermined
-How It Works
+```
+
+## How It Works
 The script attempts to determine program versions using these methods, in order:
+- Tries common version flags
+- Analyzes --help output for version flags
+- Queries package management system (dpkg)
+- Analyzes binary strings
+- Attempts execution without arguments
 
-Tries common version flags
-Analyzes --help output for version flags
-Queries package management system (dpkg)
-Analyzes binary strings
-Attempts execution without arguments
-All program executions are performed:
+All program executions are performed as unprivileged 'versionchecker' user
+- With display-related environment variables unset
+- With a timeout to prevent hanging
+- With proper permission checks
 
-As unprivileged 'versionchecker' user
-With display-related environment variables unset
-With a timeout to prevent hanging
-With proper permission checks
-Security Features
-Creates and uses dedicated unprivileged user 'versionchecker'
-Unsets display-related environment variables to prevent GUI launching
-Implements command timeout to prevent hanging
-Checks executable permissions for both current user and versionchecker
-Safely handles program output and error conditions
-Requirements
-Linux system
-Bash shell
-sudo access (for initial setup)
-Common utilities: grep, timeout, sudo, dpkg (optional)
-Contributing
+## Security Features
+- Creates and uses dedicated unprivileged user 'versionchecker'
+- Unsets display-related environment variables to prevent GUI launching
+- Implements command timeout to prevent hanging
+- Checks executable permissions for both current user and versionchecker
+- Safely handles program output and error conditions
+
+## Requirements
+- Linux system
+- Bash shell
+- sudo access (for initial setup)
+- common utilities: grep, timeout, sudo, dpkg (optional)
+
+## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-License
+## License
 [Your chosen license]
 
-Author
+## Author
 [Your name]
 
-Bugs
+## Bugs
 Report bugs at [your issue tracker URL]
-
-diff
-Copy code
