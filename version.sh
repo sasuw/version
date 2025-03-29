@@ -10,22 +10,6 @@ show_usage() {
     exit 1
 }
 
-# Function to extract version number from output
-extract_version() {
-    local output="$1"
-    local version=""
-    
-    # Try X.Y.Z format first
-    version=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n1)
-    
-    # If not found, try X.Y format
-    if [ -z "$version" ]; then
-        version=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+" | head -n1)
-    fi
-    
-    echo "$version"
-}
-
 # Parse arguments
 SHORT_OUTPUT=false
 PROGRAM=""
@@ -124,8 +108,14 @@ try_version_flag() {
     # Create a temporary file for output
     local tmpfile=$(mktemp)
     
-    # Run the command with timeout and capture both stdout and stderr
-    if timeout 1s "$program" "$flag" > "$tmpfile" 2>&1; then
+    # Run the command with timeout and as versionchecker user
+    if timeout 1s sudo -u versionchecker bash -c "
+        unset DISPLAY
+        unset WAYLAND_DISPLAY
+        unset XAUTHORITY
+        unset SESSION_MANAGER
+        unset DBUS_SESSION_BUS_ADDRESS
+        \"$program\" $flag" > "$tmpfile" 2>&1; then
         local output=$(cat "$tmpfile")
         rm "$tmpfile"
         
@@ -196,7 +186,22 @@ for flag in "${VERSION_FLAGS[@]}"; do
 done
 
 # 2. Try to find version flag from help output
-if help_output=$(timeout 1s "$PROGRAM" --help 2>&1) || help_output=$(timeout 1s "$PROGRAM" -h 2>&1); then
+# For help output check:
+if help_output=$(timeout 1s sudo -u versionchecker bash -c "
+    unset DISPLAY
+    unset WAYLAND_DISPLAY
+    unset XAUTHORITY
+    unset SESSION_MANAGER
+    unset DBUS_SESSION_BUS_ADDRESS
+    \"$PROGRAM\" --help") 2>&1 || \
+   help_output=$(timeout 1s sudo -u versionchecker bash -c "
+    unset DISPLAY
+    unset WAYLAND_DISPLAY
+    unset XAUTHORITY
+    unset SESSION_MANAGER
+    unset DBUS_SESSION_BUS_ADDRESS
+    \"$PROGRAM\" -h") 2>&1; then
+#if help_output=$(timeout 1s "$PROGRAM" --help 2>&1) || help_output=$(timeout 1s "$PROGRAM" -h 2>&1); then
     if version_flag=$(extract_version_flag_from_help "$help_output"); then
         if output=$(try_version_flag "$PROGRAM" "$version_flag" "$PROGRAM_BASE"); then
             if $SHORT_OUTPUT; then
