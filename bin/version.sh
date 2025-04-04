@@ -91,12 +91,18 @@ setup_versionchecker() {
         "macos")
             if ! dscl . -read /Users/versionchecker &>/dev/null; then
                 echo "versionchecker user not found. Setting up..."
+                # Create user with high UID to mark as system user
                 sudo dscl . -create /Users/versionchecker
                 sudo dscl . -create /Users/versionchecker UserShell /bin/false
                 sudo dscl . -create /Users/versionchecker RealName "Version Checker"
-                sudo dscl . -create /Users/versionchecker UniqueID 401
+                sudo dscl . -create /Users/versionchecker UniqueID 499  # Below 500 for system user
                 sudo dscl . -create /Users/versionchecker PrimaryGroupID 20
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
+                sudo dscl . -create /Users/versionchecker NFSHomeDirectory /var/empty
+                # Hide user from login screen and Finder
+                sudo dscl . -create /Users/versionchecker IsHidden 1
+                # Disable password authentication
+                sudo dscl . -create /Users/versionchecker Password '*'
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
             fi
             ;;
             

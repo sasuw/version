@@ -85,7 +85,10 @@ remove_alias() {
             user_home=$(getent passwd "$real_user" | cut -d: -f6)
             ;;
         "macos")
-            user_home=$(dscl . -read "/Users/$real_user" NFSHomeDirectory | awk '{print $2}')
+            if dscl . -read /Users/versionchecker &>/dev/null; then
+                sudo dscl . -delete /Users/versionchecker
+            fi
+            rm -f /etc/sudoers.d/versionchecker
             ;;
     esac
 
