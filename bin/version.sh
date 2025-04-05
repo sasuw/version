@@ -92,8 +92,18 @@ get_package_version() {
     
     case "$(get_os_type)" in
         "linux")
-            if command -v dpkg &>/dev/null; then
-                version=$(dpkg -l "$program" 2>/dev/null | grep "^ii" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
+            if command -v dpkg &> /dev/null; then
+                if dpkg_output=$(dpkg -l | grep "$program" | head -n1); then
+                    version=$(echo "$dpkg_output" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
+                    if [ -n "$version" ]; then
+                        if $SHORT_OUTPUT; then
+                            version="${program} ${version}"
+                        else
+                            echo "Version information (found in dpkg database):"
+                            version="$dpkg_output"
+                        fi
+                    fi
+                fi
             fi
             ;;
             
@@ -210,17 +220,18 @@ try_version_flag() {
     trap 'cleanup "$tmpfile"' EXIT
     cleanup "${tmpfile}"
     # Run the command with timeout and as versionchecker user
-    debug "Running command: $program $flag"
-    if timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker "$system_shell" -c "
+    debug "xxx Running command: $program $flag"
+    timeout_result=$("$timeout_cmd $TIMEOUT_SECONDS \"sudo -u versionchecker $system_shell -c\"")
+    if $timeout_result; then
         unset DISPLAY
         unset WAYLAND_DISPLAY
         unset XAUTHORITY
         unset SESSION_MANAGER
         unset DBUS_SESSION_BUS_ADDRESS
-        \"$program\" $flag" > "$tmpfile" 2>&1; then
+        "$program" "$flag" > "${tmpfile}" 2>&1; then
         local output=$(cat "$tmpfile")
         debug "Command output: '$output'"
-        rm "$tmpfile"
+        rm "${tmpfile}"
         
         if contains_version_info "$output" "$program_base"; then
             echo "$output"
@@ -385,6 +396,10 @@ VERSION_FLAGS=(
     "version"
 )
 
+VERSION_FLAGS=(
+    "-version"
+)
+
 # Function to extract version number from output
 extract_version() {
     local output="$1"
@@ -420,6 +435,8 @@ extract_version_flag_from_help() {
 debug "Trying common version flags"
 for flag in "${VERSION_FLAGS[@]}"; do
     debug "Testing flag: $flag"
+    debug "program: $PROGRAM"
+    debug "PROGRAM_BASE: $PROGRAM_BASE"
     if output=$(try_version_flag "$PROGRAM" "$flag" "$PROGRAM_BASE"); then
         if $SHORT_OUTPUT; then
             version=$(extract_version "$output")
@@ -476,22 +493,19 @@ fi
 
 # 3. Try using dpkg -l if available
 debug "Checking package manager"
-if command -v dpkg &> /dev/null; then
-    if dpkg_output=$(dpkg -l | grep "$PROGRAM_BASE" | head -n1); then
-        version=$(echo "$dpkg_output" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
-        if [ -n "$version" ]; then
-            if $SHORT_OUTPUT; then
-                echo "${PROGRAM_BASE} ${version}"
-                exit 0
-            else
-                echo "Version information (found in dpkg database):"
-                echo "$dpkg_output"
-                exit 0
-            fi
+if have_pkg_manager; then
+    version=$(get_package_version "${PROGRAM_BASE}")
+    if [ -n "$version" ]; then
+        if $SHORT_OUTPUT; then
+            echo "${PROGRAM_BASE} ${version}"
+            exit 0
+        else
+            echo "Version information (found in dpkg database):"
+            echo "$dpkg_output"
+            exit 0
         fi
     fi
 fi
-
 
 # 4. Try using strings command
 debug "Trying strings command"
@@ -514,7 +528,7 @@ if command -v strings &> /dev/null; then
     debug "Trying to extract version flag from help output"
 fi
 
-# 4. Last resort: try running without arguments
+# 5. Last resort: try running without arguments
 debug "Trying without arguments"
 if output=$(try_version_flag "$PROGRAM" "" "$PROGRAM_BASE"); then
     if $SHORT_OUTPUT; then
