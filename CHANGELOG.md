@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2025-04-05
+
+- now works also for `go`
+
 ## [1.1.0] - 2025-04-05
 
 Updated man page, `version.sh` and `install.sh`

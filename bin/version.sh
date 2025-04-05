@@ -3,7 +3,7 @@
 # version.sh - Find version information for CLI programs
 
 readonly TIMEOUT_SECONDS="2s"
-readonly VERSION="1.1.0"
+readonly VERSION="1.1.1"
 readonly SCRIPT_NAME=$(basename "$0")
 DEBUG=false
 SHORT_OUTPUT=false
@@ -231,47 +231,63 @@ contains_version_info() {
     debug "Checking output for version info (program base: $program_base)"
     # Strip potential color codes first
     output=$(echo "$output" | sed 's/\x1b\[[0-9;]*m//g')
-    debug "Stripped output: '$output'"
+    # Strip the stderr marker and everything after it, if present
+    output=$(echo "$output" | sed '/^--- STDERR ---/,$d')
+    debug "Cleaned output for check: '$output'"
 
 
     # 1. Look for common patterns like "ProgramName version 1.2.3", "Version: 1.2.3", "v1.2.3"
     # Be more specific to avoid matching help text mentioning "version"
     # Match start of line or space before program name/version keyword
-    if echo "$output" | grep -qiE "(^|[[:space:]])${program_base}[[:space:]]+(version[[:space:]]+|v)[0-9.]"; then
-        debug "Matched: Program base + 'version'/'v' + number"
+    # Allow for 'goX.Y.Z' style versions too
+    if echo "$output" | grep -qiE "(^|[[:space:]])${program_base}[[:space:]]+(version[[:space:]]+|v|go)[0-9]+(\.[0-9]+)*"; then
+        debug "Matched: Program base + 'version'/'v'/'go' + number"
         return 0
     fi
-     if echo "$output" | grep -qiE "(^|[[:space:]])version[[:space:]]*:[[:space:]]*[0-9.]"; then
+     if echo "$output" | grep -qiE "(^|[[:space:]])version[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)*"; then
         debug "Matched: 'Version:' + number"
         return 0
     fi
-    if echo "$output" | grep -qiE "(^|[[:space:]])version[[:space:]]+[0-9]"; then
+    if echo "$output" | grep -qiE "(^|[[:space:]])version[[:space:]]+[0-9]+(\.[0-9]+)*"; then
          debug "Matched: 'version' + number"
          return 0
     fi
 
-    # 2. Check for stand-alone version numbers (X.Y.Z or X.Y) if they seem prominent
+    # 2. Check for stand-alone version numbers (X.Y.Z or X.Y or goX.Y...) if they seem prominent
     # Avoid matching if it looks like part of a date, URL, or other text
-    local version_pattern="[0-9]+\.[0-9]+(\.[0-9]+([-.][a-zA-Z0-9]+)*)?" # X.Y[.Z][-build...]
+    local version_pattern="(go)?[0-9]+\.[0-9]+(\.[0-9]+([-.][a-zA-Z0-9]+)*)?" # goX.Y[.Z][-build...] or X.Y[.Z][-build...]
     # Count unique potential versions
     local version_count
-    version_count=$(echo "$output" | grep -oE "$version_pattern" | sort -u | wc -l)
-    debug "Found $version_count unique version-like patterns ($version_pattern)"
+    # Ensure grep only matches whole words/versions where appropriate, avoid partial matches within other numbers/words unless it's the 'go' prefix.
+    # Using grep -o then checking context is safer.
+    local versions_found
+    versions_found=$(echo "$output" | grep -oE "$version_pattern")
+    version_count=$(echo "$versions_found" | wc -l) # Count all occurrences first
 
-    if [[ "$version_count" -eq 1 ]]; then
-         # If exactly one found, check if it's on a line by itself or with the program name/version keyword
-         local single_version
-         single_version=$(echo "$output" | grep -oE "$version_pattern" | head -n1)
-         if echo "$output" | grep -qE "(^|[[:space:]])${program_base}.*[[:space:]]${single_version}" || \
-            echo "$output" | grep -qiE "(^|[[:space:]])version.*[[:space:]]${single_version}" || \
-            echo "$output" | grep -qE "^${single_version}[[:space:]]*$"; then
-            debug "Single version pattern '$single_version' looks plausible."
-            return 0
+    debug "Found $version_count version-like patterns ($version_pattern)"
+
+    if [[ "$version_count" -gt 0 ]]; then
+        local unique_versions
+        unique_versions=$(echo "$versions_found" | sort -u)
+        local unique_count
+        unique_count=$(echo "$unique_versions" | wc -l)
+        debug "Found $unique_count unique version-like patterns."
+
+         # If exactly one unique version found, check if it's plausible context
+         if [[ "$unique_count" -eq 1 ]]; then
+             local single_version="$unique_versions"
+             # Check if it's on a line with the program name or 'version', or maybe alone
+             if echo "$output" | grep -qE "(^|[[:space:]])${program_base}.*[[:space:]]${single_version}" || \
+                echo "$output" | grep -qiE "(^|[[:space:]])version.*[[:space:]]${single_version}" || \
+                echo "$output" | grep -qE "^${single_version}[[:space:]]*$"; then
+                debug "Single unique version pattern '$single_version' looks plausible."
+                return 0
+             fi
          fi
     fi
 
     # 3. Check for "built with", "using", "library" version lines (less reliable)
-    if echo "$output" | grep -qiE "(built|using|library).*[[:space:]]+[0-9]+\.[0-9]+"; then
+    if echo "$output" | grep -qiE "(built|using|library).*[[:space:]]+(go)?[0-9]+\.[0-9]+"; then
         debug "Matched: Built/using/library pattern"
         return 0 # Less certain, but maybe
     fi
@@ -287,91 +303,129 @@ contains_version_info() {
 #   2: Command timed out
 #   3: Sudo permission error
 # 127: Command (timeout) not found or other critical error
+# Tries running the program with a specific flag as the versionchecker user
+# Returns:
+#   0: Success, version info found (output on stdout)
+#   1: Command ran, but no version info found or other error
+#   2: Command timed out
+#   3: Sudo permission error
+# 127: Command (timeout) not found or other critical error
 try_version_flag() {
     local program_path="$1" # Use full path
     local flag="$2"         # Flag can be empty
     local program_base="$3" # Base name for contains_version_info
-    local tmpfile
+    local tmpfile_stdout tmpfile_stderr
     local sudo_output
     local sudo_exit_code
     local cmd_array=()
+    local output="" # Combined output for final check
 
     # Use mktemp with a template for safety
-    tmpfile=$(mktemp "/tmp/${SCRIPT_NAME}_${program_base}_XXXXXX") || {
-        echo "Error: Failed to create temporary file." >&2
+    tmpfile_stdout=$(mktemp "/tmp/${SCRIPT_NAME}_${program_base}_stdout_XXXXXX") || {
+        echo "Error: Failed to create stdout temporary file." >&2
+        return 1
+    }
+    tmpfile_stderr=$(mktemp "/tmp/${SCRIPT_NAME}_${program_base}_stderr_XXXXXX") || {
+        echo "Error: Failed to create stderr temporary file." >&2
+        rm -f "$tmpfile_stdout" # Clean up stdout file
         return 1
     }
     # Ensure cleanup happens even if the script exits unexpectedly
-    trap 'cleanup "$tmpfile"' EXIT INT TERM HUP
+    trap 'rm -f "$tmpfile_stdout" "$tmpfile_stderr"' EXIT INT TERM HUP
 
     debug "Attempting flag '$flag' for '$program_path' via sudo as '$VERSIONCHECKER_USER'"
 
     # Prepare command array for sudo execution
-    # Use 'env -i' to start with a clean environment, explicitly pass necessary vars
-    # Pass LC_ALL=C to avoid locale-specific output issues
-    # The flag needs to be passed as a separate argument if not empty
     cmd_array=(sudo -n -u "${VERSIONCHECKER_USER}" env -i HOME="/tmp" LC_ALL=C PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin" "$program_path")
     [[ -n "$flag" ]] && cmd_array+=("$flag")
 
-    # Execute with timeout, redirecting stdout/stderr of the *target* command to tmpfile
-    # We capture the output/stderr of the timeout command itself to check for timeout errors
-    run_with_timeout "$TIMEOUT_SECONDS" "${cmd_array[@]}" > "$tmpfile" 2>&1
+    # Execute with timeout, redirecting stdout/stderr of the *sudo* command
+    # Debug output from run_with_timeout itself goes to the script's stderr, not the files.
+    run_with_timeout "$TIMEOUT_SECONDS" "${cmd_array[@]}" > "$tmpfile_stdout" 2> "$tmpfile_stderr"
     sudo_exit_code=$?
+
+    # Read stderr content for error checking
+    local stderr_content
+    stderr_content=$(cat "$tmpfile_stderr")
 
     # Check sudo/timeout exit code
     if [[ $sudo_exit_code -eq 124 ]]; then
         debug "Command timed out (exit code 124)."
-        cleanup "$tmpfile" # Clean up before returning
+        # Cleanup handled by trap
         trap - EXIT INT TERM HUP # Remove trap specific to this run
         return 2 # Timeout specific code
     elif [[ $sudo_exit_code -eq 1 ]]; then
-         # Check if it was a sudo password prompt error (requires -n flag)
-         if grep -qE 'sudo: a password is required|sudo: sorry, you must have a tty to run sudo' "$tmpfile"; then
+         # Check if it was a sudo password prompt error (requires -n flag) - check stderr
+         if echo "$stderr_content" | grep -qE 'sudo: a password is required|sudo: sorry, you must have a tty to run sudo'; then
              echo "Error: Passwordless sudo required or TTY issue for user '$USER' to run as '${VERSIONCHECKER_USER}'." >&2
              echo "       Check sudoers configuration and ensure '-n' flag works." >&2
-             cleanup "$tmpfile"
+             # Cleanup handled by trap
              trap - EXIT INT TERM HUP
              return 3 # Sudo permission error
          fi
-         # Otherwise, could be a normal error from the command itself
+         # Otherwise, could be a normal error from the command itself (exit code 1)
          debug "Command failed with exit code 1 (non-timeout, non-sudo-auth)."
     elif [[ $sudo_exit_code -ne 0 ]]; then
+        # Any other non-zero exit code
         debug "Command failed with unexpected exit code $sudo_exit_code."
-        # Keep tmpfile content for debugging if needed, or show it
-        debug "Output/Error from failed command:"
-        debug "$(cat "$tmpfile")"
-        cleanup "$tmpfile"
+        debug "Stderr from failed command:"
+        debug "$stderr_content"
+        debug "Stdout from failed command (if any):"
+        debug "$(cat "$tmpfile_stdout")"
+        # Cleanup handled by trap
         trap - EXIT INT TERM HUP
         return 1 # General command error
     fi
 
-    # Command seemed to run (exit 0 or 1) - check output
-    local output
-    output=$(cat "$tmpfile")
-    debug "Command successful or failed non-critically (exit code $sudo_exit_code). Output:"
-    debug "$output"
+    # Command ran (exit 0 or 1 without sudo auth error) - combine output for analysis
+    output=$(cat "$tmpfile_stdout")
+    # Append stderr if it contains potentially useful info (and isn't just empty)
+    # Avoid appending if it looks like a standard flag error for Go
+    if [[ -s "$tmpfile_stderr" ]] && ! echo "$stderr_content" | grep -qE 'flag provided but not defined'; then
+        debug "Appending potentially relevant stderr content:"
+        debug "$stderr_content"
+        output+=$'\n'"--- STDERR ---"$'\n'"$stderr_content"
+    elif [[ -s "$tmpfile_stderr" ]]; then
+        debug "Ignoring stderr content (likely flag error):"
+        debug "$stderr_content"
+    fi
 
-    cleanup "$tmpfile" # Clean up tmpfile now
+    debug "Command finished with exit code $sudo_exit_code. Combined output for analysis:"
+    # Use printf to handle potential '%' characters safely
+    if $DEBUG; then
+        printf "DEBUG Raw Output to Check: %s\n" "$output" >&2 # <-- Renamed slightly for clarity
+    fi
+
+    # Cleanup tmpfiles now
+    rm -f "$tmpfile_stdout" "$tmpfile_stderr"
     trap - EXIT INT TERM HUP # Remove trap specific to this run
 
+    # Now check the combined output (primarily stdout)
     if contains_version_info "$output" "$program_base"; then
         debug "Version info found in output."
-        echo "$output" # Print the output containing version info
+        printf "%s" "$output" # Print the output containing version info (use printf)
         return 0
     else
-        debug "No version info found in output."
-        return 1
+        debug "No version info found in output (Exit code was $sudo_exit_code)."
+        # Distinguish: Command ran (e.g., exit 0) but no version vs command failed (e.g. exit 1, 2)
+        # If exit code was 0, it just didn't have the info we recognise.
+        # If exit code was non-zero (but not timeout/sudo), it failed in some other way.
+        return 1 # Indicate failure to find version OR command error
     fi
 }
 
-
-# Function to extract a simple version number (X.Y.Z or X.Y) from output
+# Function to extract a simple version number (goX.Y.Z, X.Y.Z or X.Y) from output
 extract_version() {
     local output="$1"
     local version=""
 
-    # Prioritize X.Y.Z format, including potential suffixes like -beta, _p1
-    version=$(echo "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9_]+)*' | head -n1)
+    # Try specific 'goX.Y.Z' format first, including potential suffixes
+    version=$(echo "$output" | grep -oE 'go[0-9]+\.[0-9]+(\.[0-9]+)?([-.][a-zA-Z0-9_]+)*' | head -n1)
+
+    # If not found, prioritize X.Y.Z format, including potential suffixes like -beta, _p1
+    if [[ -z "$version" ]]; then
+        version=$(echo "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9_]+)*' | head -n1)
+    fi
 
     # If not found, try X.Y format
     if [[ -z "$version" ]]; then
@@ -380,13 +434,13 @@ extract_version() {
 
     # If still not found, try just 'vX' or 'version X' pattern as last resort number grab
     if [[ -z "$version" ]]; then
-       version=$(echo "$output" | grep -oE '(^|[[:space:]])(v|version)[[:space:]]*([0-9]+([.][0-9]+)*)' | sed -E 's/.*(v|version)[[:space:]]*//i' | head -n1)
+       # Extract the number part after 'v' or 'version'
+       version=$(echo "$output" | grep -oE '(^|[[:space:]])(v|version)[[:space:]]*([0-9]+([.][0-9]+)*([-.][a-zA-Z0-9_]+)*)' | sed -E 's/.*(v|version)[[:space:]]*//i' | head -n1)
     fi
 
     debug "Extracted version: '$version'"
     echo "$version"
 }
-
 
 # --- Main Script Logic ---
 
