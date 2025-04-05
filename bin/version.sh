@@ -5,11 +5,58 @@
 readonly TIMEOUT_SECONDS=1s
 VERSION="1.0.0"
 SCRIPT_NAME=$(basename "$0")
+DEBUG=false
+
+debug() {
+    if $DEBUG; then
+        echo "DEBUG: $*" >&2
+    fi
+}
 
 # Function to show version
 show_version() {
     echo "${SCRIPT_NAME} ${VERSION}"
     exit 0
+}
+
+setup_versionchecker() {
+    debug "Setting up versionchecker user if necessary"
+    case "$(get_os_type)" in
+        "linux")
+            # Only create user if it doesn't already exist
+            if ! id -u versionchecker &>/dev/null; then
+                useradd -r -s /bin/false versionchecker
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
+            fi
+            ;;
+
+        "macos")
+            # Only create user if it doesn't already exist
+            if ! dscl . -read /Users/versionchecker &>/dev/null; then
+                dscl . -create /Users/versionchecker
+                dscl . -create /Users/versionchecker UserShell /bin/false
+                dscl . -create /Users/versionchecker RealName "Version Checker"
+                dscl . -create /Users/versionchecker UniqueID 401
+                dscl . -create /Users/versionchecker PrimaryGroupID 20
+                dscl . -create /Users/versionchecker NFSHomeDirectory /var/empty
+                # Set IsHidden so it doesn't show up on the login screen
+                dscl . -create /Users/versionchecker IsHidden 1
+                #TODO: MacOS check is this the way?
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
+            fi
+            ;;
+
+        "freebsd")
+            # Only create user if it doesn't already exist
+            if ! id -u versionchecker &>/dev/null; then
+                pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
+                mkdir -p /usr/local/etc/sudoers.d
+                #TODO: FreeBSD check is this the way?
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" > /usr/local/etc/sudoers.d/versionchecker
+            fi
+
+            ;;
+    esac
 }
 
 # Cleanup temp file
@@ -72,50 +119,6 @@ get_package_version() {
     echo "$version"
 }
 
-# Function to create versionchecker user (system specific)
-setup_versionchecker() {
-    if ! command -v sudo &>/dev/null; then
-        echo "Error: sudo is not available"
-        exit 1
-    fi
-
-    case "$(get_os_type)" in
-        "linux")
-            if ! id versionchecker &>/dev/null; then
-                echo "versionchecker user not found. Setting up..."
-                sudo useradd -r -s /bin/false versionchecker
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" | sudo tee /etc/sudoers.d/versionchecker >/dev/null
-            fi
-            ;;
-            
-        "macos")
-            if ! dscl . -read /Users/versionchecker &>/dev/null; then
-                echo "versionchecker user not found. Setting up..."
-                # Create user with high UID to mark as system user
-                sudo dscl . -create /Users/versionchecker
-                sudo dscl . -create /Users/versionchecker UserShell /bin/false
-                sudo dscl . -create /Users/versionchecker RealName "Version Checker"
-                sudo dscl . -create /Users/versionchecker UniqueID 499  # Below 500 for system user
-                sudo dscl . -create /Users/versionchecker PrimaryGroupID 20
-                sudo dscl . -create /Users/versionchecker NFSHomeDirectory /var/empty
-                # Hide user from login screen and Finder
-                sudo dscl . -create /Users/versionchecker IsHidden 1
-                # Disable password authentication
-                sudo dscl . -create /Users/versionchecker Password '*'
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
-            fi
-            ;;
-            
-        "freebsd")
-            if ! pw user show versionchecker >/dev/null 2>&1; then
-                echo "versionchecker user not found. Setting up..."
-                sudo pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" | sudo tee /usr/local/etc/sudoers.d/versionchecker >/dev/null
-            fi
-            ;;
-    esac
-}
-
 # Function to get system-specific shell
 get_system_shell() {
     case "$(get_os_type)" in
@@ -154,29 +157,37 @@ contains_version_info() {
     local output="$1"
     local program_base="$2"
     
-    # Check for program name followed by version-like string
-    if echo "$output" | grep -iE "^${program_base}[[:space:]]+(v[0-9]+|[0-9]+(\.[0-9]+)*)" > /dev/null; then
+    debug "Checking output for version info: '$output'"
+    
+    # Check for program name followed by version/Version word and number
+    if echo "$output" | grep -iE "^${program_base}[[:space:]]+(version[[:space:]]+|v)[0-9]" > /dev/null; then
+        debug "Found version after program name"
         return 0
     fi
     
-    # Check for common version patterns
-    if echo "$output" | grep -iE "version|v[0-9]" > /dev/null; then
+    # Check for "version" followed immediately by a number
+    if echo "$output" | grep -iE "version[[:space:]]*[0-9]" > /dev/null; then
+        debug "Found 'version' followed by number"
         return 0
     fi
 
     # Check for "compiled with" or "linked with" followed by version
     if echo "$output" | grep -iE "(compiled|linked).+[0-9]+\.[0-9]+\.[0-9]+" > /dev/null; then
+        debug "Found compiled/linked with version"
         return 0
     fi
 
     # Last resort: look for X.Y.Z pattern
     # Count how many unique version-like strings we find
     local version_count=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u | wc -l)
+    debug "Found $version_count unique version patterns"
     if [ "$version_count" -eq 1 ]; then
         # If we found exactly one X.Y.Z pattern, consider it a version
+        debug "Using single version pattern found"
         return 0
     fi
     
+    debug "No version information found"
     return 1
 }
 
@@ -187,15 +198,19 @@ try_version_flag() {
     local program_base="$3"
     local system_shell=$(get_system_shell)
     
+    debug "Trying flag '$flag' for program '$program'"
+    
     # Create a temporary file for output
     local tmpfile
     tmpfile=$(mktemp) || {
+        debug "Failed to create temporary file"
         echo "Failed to create temporary file" >&2
         return 1
     }
     trap 'cleanup "$tmpfile"' EXIT
-    
+    cleanup "${tmpfile}"
     # Run the command with timeout and as versionchecker user
+    debug "Running command: $program $flag"
     if timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker "$system_shell" -c "
         unset DISPLAY
         unset WAYLAND_DISPLAY
@@ -204,6 +219,7 @@ try_version_flag() {
         unset DBUS_SESSION_BUS_ADDRESS
         \"$program\" $flag" > "$tmpfile" 2>&1; then
         local output=$(cat "$tmpfile")
+        debug "Command output: '$output'"
         rm "$tmpfile"
         
         if contains_version_info "$output" "$program_base"; then
@@ -212,8 +228,10 @@ try_version_flag() {
         fi
     else
         local exit_code=$?
+        debug "Command failed with exit code $exit_code"
         rm "$tmpfile"
         if [ $exit_code -eq 124 ]; then
+            debug "Command timed out"
             return 2
         fi
     fi
@@ -224,7 +242,7 @@ try_version_flag() {
 # Check requirements first
 case "$(get_os_type)" in
     "macos"|"freebsd")
-        if ! command -v gtimeout &>/dev/null; then
+        if ! command -v timeout_cmd &>/dev/null; then
             echo "GNU timeout not found. Please install coreutils:"
             case "$(get_os_type)" in
                 "macos")   echo "brew install coreutils" ;;
@@ -250,6 +268,7 @@ Options:
   -s, --short     Output only program name and version number
   -h, --help      Display this help message
   -v, --version   Display version information
+  -d, --debug     Show debug information
 
 Examples:
   ${SCRIPT_NAME} python
@@ -287,6 +306,10 @@ while (( $# > 0 )); do
             SHORT_OUTPUT=true
             shift
             ;;
+        -d|--debug)
+            DEBUG=true
+            shift
+            ;;
         -*)
             echo "Error: Unknown option: $1" >&2
             echo "Try '${SCRIPT_NAME} --help' for more information." >&2
@@ -316,6 +339,7 @@ if command -v "$PROGRAM" &> /dev/null; then
     program_path=$(command -v "$PROGRAM")
 elif command -v "${PROGRAM}3" &> /dev/null; then  # Try with '3' suffix for python, ruby etc.
     program_path=$(command -v "${PROGRAM}3")
+    PROGRAM="$PROGRAM3"
 else
     if $SHORT_OUTPUT; then
         echo "${PROGRAM_BASE} not-found"
@@ -393,7 +417,9 @@ extract_version_flag_from_help() {
 }
 
 # 1. First try common version flags
+debug "Trying common version flags"
 for flag in "${VERSION_FLAGS[@]}"; do
+    debug "Testing flag: $flag"
     if output=$(try_version_flag "$PROGRAM" "$flag" "$PROGRAM_BASE"); then
         if $SHORT_OUTPUT; then
             version=$(extract_version "$output")
@@ -412,15 +438,16 @@ for flag in "${VERSION_FLAGS[@]}"; do
 done
 
 # 2. Try to find version flag from help output
+debug "Trying to extract version flag from help output"
 help_output=""
-if help_output=$(timeout $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
+if help_output=$(timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
     unset DISPLAY
     unset WAYLAND_DISPLAY
     unset XAUTHORITY
     unset SESSION_MANAGER
     unset DBUS_SESSION_BUS_ADDRESS
     \"$PROGRAM\" --help" 2>&1) || \
-   help_output=$(timeout $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
+   help_output=$(timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
     unset DISPLAY
     unset WAYLAND_DISPLAY
     unset XAUTHORITY
@@ -448,6 +475,7 @@ if help_output=$(timeout $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
 fi
 
 # 3. Try using dpkg -l if available
+debug "Checking package manager"
 if command -v dpkg &> /dev/null; then
     if dpkg_output=$(dpkg -l | grep "$PROGRAM_BASE" | head -n1); then
         version=$(echo "$dpkg_output" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
@@ -466,6 +494,7 @@ fi
 
 
 # 4. Try using strings command
+debug "Trying strings command"
 if command -v strings &> /dev/null; then
     program_path=$(which "$PROGRAM")
     version_info=$(strings "$program_path" | grep -i "version" | grep -E "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -n1)
@@ -482,9 +511,11 @@ if command -v strings &> /dev/null; then
             exit 0
         fi
     fi
+    debug "Trying to extract version flag from help output"
 fi
 
 # 4. Last resort: try running without arguments
+debug "Trying without arguments"
 if output=$(try_version_flag "$PROGRAM" "" "$PROGRAM_BASE"); then
     if $SHORT_OUTPUT; then
         version=$(extract_version "$output")

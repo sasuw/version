@@ -187,28 +187,44 @@ install_dependencies() {
     esac
 }
 
+# TODO don't duplicate from version.sh, source or some other solution
 # Function to create versionchecker user
 setup_versionchecker() {
     echo "Setting up versionchecker user..."
     case "$(get_os_type)" in
         "linux")
-            useradd -r -s /bin/false versionchecker
-            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
+            # Only create user if it doesn't already exist
+            if ! id -u versionchecker &>/dev/null; then
+                useradd -r -s /bin/false versionchecker
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
+            fi
             ;;
-            
+
         "macos")
-            dscl . -create /Users/versionchecker
-            dscl . -create /Users/versionchecker UserShell /bin/false
-            dscl . -create /Users/versionchecker RealName "Version Checker"
-            dscl . -create /Users/versionchecker UniqueID 401
-            dscl . -create /Users/versionchecker PrimaryGroupID 20
-            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
+            # Only create user if it doesn't already exist
+            if ! dscl . -read /Users/versionchecker &>/dev/null; then
+                dscl . -create /Users/versionchecker
+                dscl . -create /Users/versionchecker UserShell /bin/false
+                dscl . -create /Users/versionchecker RealName "Version Checker"
+                dscl . -create /Users/versionchecker UniqueID 401
+                dscl . -create /Users/versionchecker PrimaryGroupID 20
+                dscl . -create /Users/versionchecker NFSHomeDirectory /var/empty
+                # Set IsHidden so it doesn't show up on the login screen
+                dscl . -create /Users/versionchecker IsHidden 1
+                #TODO: MacOS check is this the way?
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
+            fi
             ;;
-            
+
         "freebsd")
-            pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
-            mkdir -p /usr/local/etc/sudoers.d
-            echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" > /usr/local/etc/sudoers.d/versionchecker
+            # Only create user if it doesn't already exist
+            if ! id -u versionchecker &>/dev/null; then
+                pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
+                mkdir -p /usr/local/etc/sudoers.d
+                #TODO: FreeBSD check is this the way?
+                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" > /usr/local/etc/sudoers.d/versionchecker
+            fi
+
             ;;
     esac
 }
