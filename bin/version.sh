@@ -2,14 +2,22 @@
 
 # version.sh - Find version information for CLI programs
 
-readonly TIMEOUT_SECONDS=1s
-VERSION="1.0.0"
-SCRIPT_NAME=$(basename "$0")
+readonly TIMEOUT_SECONDS="2s"
+readonly VERSION="1.1.0"
+readonly SCRIPT_NAME=$(basename "$0")
 DEBUG=false
+SHORT_OUTPUT=false
+PROGRAM=""
+PROGRAM_BASE=""
+PROGRAM_PATH="" # Resolved path
+VERSIONCHECKER_USER="versionchecker"
+
+# --- Helper Functions ---
 
 debug() {
     if $DEBUG; then
-        echo "DEBUG: $*" >&2
+        # Prepend script name and PID for clarity in complex scenarios
+        echo "[${SCRIPT_NAME} $$] DEBUG: $*" >&2
     fi
 }
 
@@ -19,293 +27,371 @@ show_version() {
     exit 0
 }
 
-setup_versionchecker() {
-    debug "Setting up versionchecker user if necessary"
-    case "$(get_os_type)" in
-        "linux")
-            # Only create user if it doesn't already exist
-            if ! id -u versionchecker &>/dev/null; then
-                useradd -r -s /bin/false versionchecker
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
-            fi
-            ;;
-
-        "macos")
-            # Only create user if it doesn't already exist
-            if ! dscl . -read /Users/versionchecker &>/dev/null; then
-                dscl . -create /Users/versionchecker
-                dscl . -create /Users/versionchecker UserShell /bin/false
-                dscl . -create /Users/versionchecker RealName "Version Checker"
-                dscl . -create /Users/versionchecker UniqueID 401
-                dscl . -create /Users/versionchecker PrimaryGroupID 20
-                dscl . -create /Users/versionchecker NFSHomeDirectory /var/empty
-                # Set IsHidden so it doesn't show up on the login screen
-                dscl . -create /Users/versionchecker IsHidden 1
-                #TODO: MacOS check is this the way?
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
-            fi
-            ;;
-
-        "freebsd")
-            # Only create user if it doesn't already exist
-            if ! id -u versionchecker &>/dev/null; then
-                pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
-                mkdir -p /usr/local/etc/sudoers.d
-                #TODO: FreeBSD check is this the way?
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" > /usr/local/etc/sudoers.d/versionchecker
-            fi
-
-            ;;
-    esac
-}
-
-# Cleanup temp file
-cleanup() {
-    local tmpfile="${1:-}"
-    [ -n "$tmpfile" ] && [ -f "$tmpfile" ] && rm -f "$tmpfile"
-}
-
-# Function to determine OS type
-get_os_type() {
-    case "$(uname)" in
-        "Linux")   echo "linux" ;;
-        "Darwin")  echo "macos" ;;
-        "FreeBSD") echo "freebsd" ;;
-        *)         echo "unknown" ;;
-    esac
-}
-
-# Function to check package manager availability
-have_pkg_manager() {
-    case "$(get_os_type)" in
-        "linux")   command -v dpkg &>/dev/null ;;
-        "macos")   command -v brew &>/dev/null || command -v port &>/dev/null ;;
-        "freebsd") command -v pkg &>/dev/null ;;
-        *)         return 1 ;;
-    esac
-}
-
-# Function to get package version (system specific)
-get_package_version() {
-    local program="$1"
-    local version=""
-    
-    case "$(get_os_type)" in
-        "linux")
-            if command -v dpkg &> /dev/null; then
-                if dpkg_output=$(dpkg -l | grep "$program" | head -n1); then
-                    version=$(echo "$dpkg_output" | awk '{print $3}' | grep -oE "[0-9]+(\.[0-9]+)+")
-                    if [ -n "$version" ]; then
-                        if $SHORT_OUTPUT; then
-                            version="${program} ${version}"
-                        else
-                            echo "Version information (found in dpkg database):"
-                            version="$dpkg_output"
-                        fi
-                    fi
-                fi
-            fi
-            ;;
-            
-        "macos")
-            if command -v brew &>/dev/null; then
-                local formula=$(brew list | grep -E "^${program}(@[0-9.]+)?$" | head -n1)
-                if [ -n "$formula" ]; then
-                    version=$(brew info --json=v2 "$formula" | grep -o '"version": "[^"]*"' | cut -d'"' -f4)
-                fi
-            fi
-            if [ -z "$version" ] && command -v port &>/dev/null; then
-                version=$(port installed "$program" 2>/dev/null | grep -v "None of the specified ports" | grep active | awk '{print $2}')
-            fi
-            ;;
-            
-        "freebsd")
-            if command -v pkg &>/dev/null; then
-                version=$(pkg info "$program" 2>/dev/null | grep -E "^Version" | cut -d: -f2- | tr -d ' ')
-            fi
-            ;;
-    esac
-    
-    echo "$version"
-}
-
-# Function to get system-specific shell
-get_system_shell() {
-    case "$(get_os_type)" in
-        "freebsd") echo "/bin/sh" ;;
-        *)         echo "/bin/bash" ;;
-    esac
-}
-
-# Timeout command wrapper for different systems
-timeout_cmd() {
-    case "$(get_os_type)" in
-        "linux")
-            timeout "$@"
-            ;;
-        "macos")
-            if command -v gtimeout &>/dev/null; then
-                gtimeout "$@"
-            else
-                echo "Please install GNU timeout: brew install coreutils" >&2
-                exit 1
-            fi
-            ;;
-        "freebsd")
-            if command -v gtimeout &>/dev/null; then
-                gtimeout "$@"
-            else
-                echo "Please install GNU timeout: pkg install coreutils" >&2
-                exit 1
-            fi
-            ;;
-    esac
-}
-
-# Function to check if output contains version information
-contains_version_info() {
-    local output="$1"
-    local program_base="$2"
-    
-    debug "Checking output for version info: '$output'"
-    
-    # Check for program name followed by version/Version word and number
-    if echo "$output" | grep -iE "^${program_base}[[:space:]]+(version[[:space:]]+|v)[0-9]" > /dev/null; then
-        debug "Found version after program name"
-        return 0
-    fi
-    
-    # Check for "version" followed immediately by a number
-    if echo "$output" | grep -iE "version[[:space:]]*[0-9]" > /dev/null; then
-        debug "Found 'version' followed by number"
-        return 0
-    fi
-
-    # Check for "compiled with" or "linked with" followed by version
-    if echo "$output" | grep -iE "(compiled|linked).+[0-9]+\.[0-9]+\.[0-9]+" > /dev/null; then
-        debug "Found compiled/linked with version"
-        return 0
-    fi
-
-    # Last resort: look for X.Y.Z pattern
-    # Count how many unique version-like strings we find
-    local version_count=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u | wc -l)
-    debug "Found $version_count unique version patterns"
-    if [ "$version_count" -eq 1 ]; then
-        # If we found exactly one X.Y.Z pattern, consider it a version
-        debug "Using single version pattern found"
-        return 0
-    fi
-    
-    debug "No version information found"
-    return 1
-}
-
-# Modify the try_version_flag function to use the system-specific shell
-try_version_flag() {
-    local program="$1"
-    local flag="$2"
-    local program_base="$3"
-    local system_shell=$(get_system_shell)
-    
-    debug "Trying flag '$flag' for program '$program'"
-    
-    # Create a temporary file for output
-    local tmpfile
-    tmpfile=$(mktemp) || {
-        debug "Failed to create temporary file"
-        echo "Failed to create temporary file" >&2
-        return 1
-    }
-    trap 'cleanup "$tmpfile"' EXIT
-    cleanup "${tmpfile}"
-    # Run the command with timeout and as versionchecker user
-    debug "xxx Running command: $program $flag"
-    timeout_result=$("$timeout_cmd $TIMEOUT_SECONDS \"sudo -u versionchecker $system_shell -c\"")
-    if $timeout_result; then
-        unset DISPLAY
-        unset WAYLAND_DISPLAY
-        unset XAUTHORITY
-        unset SESSION_MANAGER
-        unset DBUS_SESSION_BUS_ADDRESS
-        "$program" "$flag" > "${tmpfile}" 2>&1; then
-        local output=$(cat "$tmpfile")
-        debug "Command output: '$output'"
-        rm "${tmpfile}"
-        
-        if contains_version_info "$output" "$program_base"; then
-            echo "$output"
-            return 0
-        fi
-    else
-        local exit_code=$?
-        debug "Command failed with exit code $exit_code"
-        rm "$tmpfile"
-        if [ $exit_code -eq 124 ]; then
-            debug "Command timed out"
-            return 2
-        fi
-    fi
-    return 1
-}
-
-# Main script logic
-# Check requirements first
-case "$(get_os_type)" in
-    "macos"|"freebsd")
-        if ! command -v timeout_cmd &>/dev/null; then
-            echo "GNU timeout not found. Please install coreutils:"
-            case "$(get_os_type)" in
-                "macos")   echo "brew install coreutils" ;;
-                "freebsd") echo "pkg install coreutils" ;;
-            esac
-            exit 1
-        fi
-        ;;
-esac
-
-# Setup versionchecker user if needed
-setup_versionchecker
-
+# Function to show usage
 show_usage() {
     cat << EOF
-${SCRIPT_NAME} - Find version information for CLI programs
+${SCRIPT_NAME} ${VERSION} - Find version information for CLI programs
 
-Usage: ${SCRIPT_NAME} [-s|--short] <program-name>
-       ${SCRIPT_NAME} [-h|--help]
-       ${SCRIPT_NAME} [-v|--version]
+Usage: ${SCRIPT_NAME} [options] <program-name>
+       ${SCRIPT_NAME} -h | --help
+       ${SCRIPT_NAME} -v | --version
+
+Finds the version of a specified command-line program using various methods.
+Runs commands as the '${VERSIONCHECKER_USER}' user for security.
+
+Prerequisites:
+  1. A non-privileged user named '${VERSIONCHECKER_USER}' must exist.
+     Linux:   sudo useradd -r -s /bin/false ${VERSIONCHECKER_USER}
+     macOS:   sudo dscl . -create /Users/${VERSIONCHECKER_USER} UserShell /usr/bin/false
+              sudo dscl . -create /Users/${VERSIONCHECKER_USER} NFSHomeDirectory /var/empty
+              # (See script source 'setup_versionchecker_example' for more macOS details)
+     FreeBSD: sudo pw useradd ${VERSIONCHECKER_USER} -d /nonexistent -s /usr/sbin/nologin
+  2. The user running this script must have passwordless sudo permission
+     to run commands as '${VERSIONCHECKER_USER}'. Add a rule like:
+     <your_user> ALL=(${VERSIONCHECKER_USER}) NOPASSWD: ALL
+     (Place this in /etc/sudoers or /etc/sudoers.d/versionchecker)
+  3. On macOS/FreeBSD, GNU timeout (gtimeout) is needed:
+     macOS:   brew install coreutils
+     FreeBSD: pkg install coreutils
 
 Options:
-  -s, --short     Output only program name and version number
-  -h, --help      Display this help message
-  -v, --version   Display version information
-  -d, --debug     Show debug information
+  -s, --short     Output only program name and version number (e.g., "git 2.34.1")
+  -h, --help      Display this help message and exit
+  -v, --version   Display script version and exit
+  -d, --debug     Enable verbose debug output to stderr
 
 Examples:
   ${SCRIPT_NAME} python
   ${SCRIPT_NAME} --short git
   ${SCRIPT_NAME} /usr/local/bin/node
 
-The script will try various methods to determine the version:
-1. Common version flags (--version, -v, etc.)
-2. Help output analysis
-3. Package manager information
-4. Binary string analysis
-5. No-argument execution
-
-Exit codes:
-  0  Success
-  1  General error
+Exit Codes:
+  0  Success (version found)
+  1  Error (program not found, permissions error, prerequisites not met, version undetermined)
   2  Invalid usage
+
+Methods Tried:
+  1. Common version flags (--version, -v, -V, etc.)
+  2. Help output analysis (--help, -h)
+  3. Package manager information (dpkg, brew, pkg)
+  4. Binary string analysis (strings)
+  5. No-argument execution (less reliable)
 EOF
     exit 0
 }
 
-# Parse arguments
-SHORT_OUTPUT=false
-PROGRAM=""
+# Cleanup temp file
+cleanup() {
+    local tmpfile="${1:-}"
+    debug "Cleaning up tmpfile: $tmpfile"
+    rm -f "$tmpfile"
+}
 
-while (( $# > 0 )); do
+# Function to determine OS type
+get_os_type() {
+    case "$(uname -s)" in
+        Linux)   echo "linux" ;;
+        Darwin)  echo "macos" ;;
+        FreeBSD) echo "freebsd" ;;
+        *)       echo "unknown" ;;
+    esac
+}
+
+# Function to check package manager availability
+have_pkg_manager() {
+    local os_type
+    os_type=$(get_os_type)
+    debug "Checking package manager for OS: $os_type"
+    case "$os_type" in
+        linux)   command -v dpkg-query &>/dev/null ;;
+        macos)   command -v brew &>/dev/null ;; # Prioritize brew
+        freebsd) command -v pkg &>/dev/null ;;
+        *)       return 1 ;;
+    esac
+}
+
+# Function to get package version (system specific)
+# Returns only the version string, or empty string if not found
+get_package_version() {
+    local program_base="$1" # Use base name for package lookup
+    local version=""
+    local os_type
+    os_type=$(get_os_type)
+    debug "Getting package version for '$program_base' on '$os_type'"
+
+    case "$os_type" in
+        linux)
+            if command -v dpkg-query &>/dev/null; then
+                # Find package providing the command path
+                local pkg_name
+                pkg_name=$(dpkg-query -S "$PROGRAM_PATH" 2>/dev/null | cut -d: -f1 | head -n1)
+                if [[ -n "$pkg_name" ]]; then
+                    debug "Found package '$pkg_name' for path '$PROGRAM_PATH'"
+                    version=$(dpkg-query -W -f='${Version}' "$pkg_name" 2>/dev/null)
+                    # Clean up epoch prefix like "2:" from version
+                    version="${version#*:}"
+                    debug "dpkg version for '$pkg_name': '$version'"
+                else
+                    debug "Could not find package owning '$PROGRAM_PATH' via dpkg-query -S"
+                    # Fallback: Guess package name might be program base name
+                    version=$(dpkg-query -W -f='${Version}' "$program_base" 2>/dev/null)
+                    version="${version#*:}"
+                    debug "Fallback dpkg version for '$program_base': '$version'"
+                fi
+            fi
+            ;;
+        macos)
+            if command -v brew &>/dev/null; then
+                # Need the formula name, which might differ from command name (e.g., gnu-sed -> sed)
+                # First, try finding formula owning the path
+                local formula
+                formula=$(brew list --formula -1 | while read -r f; do brew --prefix "$f" && echo " $f"; done | grep "^$(dirname "$PROGRAM_PATH")/bin " | awk '{print $2}' | head -n1)
+                # Fallback: guess formula name is program base name
+                [[ -z "$formula" ]] && formula="$program_base"
+
+                debug "Trying brew formula: '$formula'"
+                if brew info --json=v1 "$formula" &>/dev/null; then
+                   version=$(brew info --json=v1 "$formula" | grep '"installed"' | grep -Eo '"version": "[^"]+"' | cut -d'"' -f4 | head -n1)
+                   debug "Brew version: '$version'"
+                else
+                    debug "Brew formula '$formula' not found or info failed."
+                fi
+            fi
+            # Add MacPorts support if needed (omitted for brevity, similar logic)
+            ;;
+        freebsd)
+            if command -v pkg &>/dev/null; then
+                # Find package providing the command path
+                local pkg_name
+                pkg_name=$(pkg which "$PROGRAM_PATH" 2>/dev/null | sed -n 's/.* was installed by package //p')
+                if [[ -n "$pkg_name" ]]; then
+                    debug "Found package '$pkg_name' for path '$PROGRAM_PATH'"
+                    version=$(pkg query '%v' "$pkg_name" 2>/dev/null)
+                    debug "pkg version for '$pkg_name': '$version'"
+                else
+                    debug "Could not find package owning '$PROGRAM_PATH' via pkg which"
+                     # Fallback: Guess package name might be program base name
+                    version=$(pkg query '%v' "$program_base" 2>/dev/null)
+                    debug "Fallback pkg version for '$program_base': '$version'"
+                fi
+            fi
+            ;;
+    esac
+
+    # Basic cleanup: remove leading/trailing whitespace
+    version=$(echo "$version" | awk '{$1=$1};1')
+    echo "$version"
+}
+
+# Timeout command wrapper for different systems
+# Usage: run_with_timeout <timeout_secs> <command> [args...]
+# Returns exit code of the command, or 124 if timed out.
+run_with_timeout() {
+    local timeout_duration="$1"
+    shift
+    local cmd=("${@}")
+    local timeout_bin=""
+    local os_type
+    os_type=$(get_os_type)
+
+    case "$os_type" in
+        linux)
+            timeout_bin="timeout"
+            ;;
+        macos|freebsd)
+            if command -v gtimeout &>/dev/null; then
+                timeout_bin="gtimeout"
+            else
+                echo "Error: GNU timeout (gtimeout) not found. Please install coreutils." >&2
+                 case "$os_type" in
+                    macos)   echo "Run: brew install coreutils" >&2 ;;
+                    freebsd) echo "Run: pkg install coreutils" >&2 ;;
+                 esac
+                return 127 # Command not found-like error
+            fi
+            ;;
+        *)
+            echo "Error: Unsupported OS for timeout command." >&2
+            return 1
+            ;;
+    esac
+
+    debug "Running with timeout: $timeout_bin $timeout_duration ${cmd[*]}"
+    "$timeout_bin" "$timeout_duration" "${cmd[@]}"
+    local exit_code=$?
+    debug "Timeout command finished with exit code: $exit_code"
+    return $exit_code
+}
+
+# Function to check if output likely contains version information
+contains_version_info() {
+    local output="$1"
+    local program_base="$2" # Use base name for checks
+
+    debug "Checking output for version info (program base: $program_base)"
+    # Strip potential color codes first
+    output=$(echo "$output" | sed 's/\x1b\[[0-9;]*m//g')
+    debug "Stripped output: '$output'"
+
+
+    # 1. Look for common patterns like "ProgramName version 1.2.3", "Version: 1.2.3", "v1.2.3"
+    # Be more specific to avoid matching help text mentioning "version"
+    # Match start of line or space before program name/version keyword
+    if echo "$output" | grep -qiE "(^|[[:space:]])${program_base}[[:space:]]+(version[[:space:]]+|v)[0-9.]"; then
+        debug "Matched: Program base + 'version'/'v' + number"
+        return 0
+    fi
+     if echo "$output" | grep -qiE "(^|[[:space:]])version[[:space:]]*:[[:space:]]*[0-9.]"; then
+        debug "Matched: 'Version:' + number"
+        return 0
+    fi
+    if echo "$output" | grep -qiE "(^|[[:space:]])version[[:space:]]+[0-9]"; then
+         debug "Matched: 'version' + number"
+         return 0
+    fi
+
+    # 2. Check for stand-alone version numbers (X.Y.Z or X.Y) if they seem prominent
+    # Avoid matching if it looks like part of a date, URL, or other text
+    local version_pattern="[0-9]+\.[0-9]+(\.[0-9]+([-.][a-zA-Z0-9]+)*)?" # X.Y[.Z][-build...]
+    # Count unique potential versions
+    local version_count
+    version_count=$(echo "$output" | grep -oE "$version_pattern" | sort -u | wc -l)
+    debug "Found $version_count unique version-like patterns ($version_pattern)"
+
+    if [[ "$version_count" -eq 1 ]]; then
+         # If exactly one found, check if it's on a line by itself or with the program name/version keyword
+         local single_version
+         single_version=$(echo "$output" | grep -oE "$version_pattern" | head -n1)
+         if echo "$output" | grep -qE "(^|[[:space:]])${program_base}.*[[:space:]]${single_version}" || \
+            echo "$output" | grep -qiE "(^|[[:space:]])version.*[[:space:]]${single_version}" || \
+            echo "$output" | grep -qE "^${single_version}[[:space:]]*$"; then
+            debug "Single version pattern '$single_version' looks plausible."
+            return 0
+         fi
+    fi
+
+    # 3. Check for "built with", "using", "library" version lines (less reliable)
+    if echo "$output" | grep -qiE "(built|using|library).*[[:space:]]+[0-9]+\.[0-9]+"; then
+        debug "Matched: Built/using/library pattern"
+        return 0 # Less certain, but maybe
+    fi
+
+    debug "No definitive version information pattern found in output."
+    return 1
+}
+
+# Tries running the program with a specific flag as the versionchecker user
+# Returns:
+#   0: Success, version info found (output on stdout)
+#   1: Command ran, but no version info found or other error
+#   2: Command timed out
+#   3: Sudo permission error
+# 127: Command (timeout) not found or other critical error
+try_version_flag() {
+    local program_path="$1" # Use full path
+    local flag="$2"         # Flag can be empty
+    local program_base="$3" # Base name for contains_version_info
+    local tmpfile
+    local sudo_output
+    local sudo_exit_code
+    local cmd_array=()
+
+    # Use mktemp with a template for safety
+    tmpfile=$(mktemp "/tmp/${SCRIPT_NAME}_${program_base}_XXXXXX") || {
+        echo "Error: Failed to create temporary file." >&2
+        return 1
+    }
+    # Ensure cleanup happens even if the script exits unexpectedly
+    trap 'cleanup "$tmpfile"' EXIT INT TERM HUP
+
+    debug "Attempting flag '$flag' for '$program_path' via sudo as '$VERSIONCHECKER_USER'"
+
+    # Prepare command array for sudo execution
+    # Use 'env -i' to start with a clean environment, explicitly pass necessary vars
+    # Pass LC_ALL=C to avoid locale-specific output issues
+    # The flag needs to be passed as a separate argument if not empty
+    cmd_array=(sudo -n -u "${VERSIONCHECKER_USER}" env -i HOME="/tmp" LC_ALL=C PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin" "$program_path")
+    [[ -n "$flag" ]] && cmd_array+=("$flag")
+
+    # Execute with timeout, redirecting stdout/stderr of the *target* command to tmpfile
+    # We capture the output/stderr of the timeout command itself to check for timeout errors
+    run_with_timeout "$TIMEOUT_SECONDS" "${cmd_array[@]}" > "$tmpfile" 2>&1
+    sudo_exit_code=$?
+
+    # Check sudo/timeout exit code
+    if [[ $sudo_exit_code -eq 124 ]]; then
+        debug "Command timed out (exit code 124)."
+        cleanup "$tmpfile" # Clean up before returning
+        trap - EXIT INT TERM HUP # Remove trap specific to this run
+        return 2 # Timeout specific code
+    elif [[ $sudo_exit_code -eq 1 ]]; then
+         # Check if it was a sudo password prompt error (requires -n flag)
+         if grep -qE 'sudo: a password is required|sudo: sorry, you must have a tty to run sudo' "$tmpfile"; then
+             echo "Error: Passwordless sudo required or TTY issue for user '$USER' to run as '${VERSIONCHECKER_USER}'." >&2
+             echo "       Check sudoers configuration and ensure '-n' flag works." >&2
+             cleanup "$tmpfile"
+             trap - EXIT INT TERM HUP
+             return 3 # Sudo permission error
+         fi
+         # Otherwise, could be a normal error from the command itself
+         debug "Command failed with exit code 1 (non-timeout, non-sudo-auth)."
+    elif [[ $sudo_exit_code -ne 0 ]]; then
+        debug "Command failed with unexpected exit code $sudo_exit_code."
+        # Keep tmpfile content for debugging if needed, or show it
+        debug "Output/Error from failed command:"
+        debug "$(cat "$tmpfile")"
+        cleanup "$tmpfile"
+        trap - EXIT INT TERM HUP
+        return 1 # General command error
+    fi
+
+    # Command seemed to run (exit 0 or 1) - check output
+    local output
+    output=$(cat "$tmpfile")
+    debug "Command successful or failed non-critically (exit code $sudo_exit_code). Output:"
+    debug "$output"
+
+    cleanup "$tmpfile" # Clean up tmpfile now
+    trap - EXIT INT TERM HUP # Remove trap specific to this run
+
+    if contains_version_info "$output" "$program_base"; then
+        debug "Version info found in output."
+        echo "$output" # Print the output containing version info
+        return 0
+    else
+        debug "No version info found in output."
+        return 1
+    fi
+}
+
+
+# Function to extract a simple version number (X.Y.Z or X.Y) from output
+extract_version() {
+    local output="$1"
+    local version=""
+
+    # Prioritize X.Y.Z format, including potential suffixes like -beta, _p1
+    version=$(echo "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9_]+)*' | head -n1)
+
+    # If not found, try X.Y format
+    if [[ -z "$version" ]]; then
+        version=$(echo "$output" | grep -oE '[0-9]+\.[0-9]+([-.][a-zA-Z0-9_]+)*' | head -n1)
+    fi
+
+    # If still not found, try just 'vX' or 'version X' pattern as last resort number grab
+    if [[ -z "$version" ]]; then
+       version=$(echo "$output" | grep -oE '(^|[[:space:]])(v|version)[[:space:]]*([0-9]+([.][0-9]+)*)' | sed -E 's/.*(v|version)[[:space:]]*//i' | head -n1)
+    fi
+
+    debug "Extracted version: '$version'"
+    echo "$version"
+}
+
+
+# --- Main Script Logic ---
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
             show_usage
@@ -320,236 +406,369 @@ while (( $# > 0 )); do
         -d|--debug)
             DEBUG=true
             shift
+            # Enable debug mode in bash
+            set -x
+            debug "Debug mode enabled."
             ;;
         -*)
             echo "Error: Unknown option: $1" >&2
-            echo "Try '${SCRIPT_NAME} --help' for more information." >&2
+            show_usage >&2 # Show usage on error
             exit 2
             ;;
         *)
-            if [ -n "$PROGRAM" ]; then
-                echo "Error: Only one program name can be specified" >&2
-                echo "Try '${SCRIPT_NAME} --help' for more information." >&2
+            if [[ -n "$PROGRAM" ]]; then
+                echo "Error: Only one program name can be specified." >&2
+                show_usage >&2
                 exit 2
             fi
             PROGRAM="$1"
+            # Get base name early for use in messages and lookups
             PROGRAM_BASE=$(basename "$PROGRAM")
             shift
             ;;
     esac
 done
 
+# Turn off bash debug mode if it was enabled
+set +x
+
 # Check if a program name was provided
-if [ -z "$PROGRAM" ]; then
-    show_usage
+if [[ -z "$PROGRAM" ]]; then
+    echo "Error: Program name not specified." >&2
+    show_usage >&2
+    exit 2
 fi
 
-# Resolve program path, handling python and similar cases
-program_path=""
-if command -v "$PROGRAM" &> /dev/null; then
-    program_path=$(command -v "$PROGRAM")
-elif command -v "${PROGRAM}3" &> /dev/null; then  # Try with '3' suffix for python, ruby etc.
-    program_path=$(command -v "${PROGRAM}3")
-    PROGRAM="$PROGRAM3"
-else
+debug "Starting version check for program: $PROGRAM (Base: $PROGRAM_BASE)"
+
+# --- Prerequisite Checks ---
+
+# 1. Check if versionchecker user exists
+if ! id -u "${VERSIONCHECKER_USER}" > /dev/null 2>&1; then
+    echo "Error: Prerequisite failed: User '${VERSIONCHECKER_USER}' does not exist." >&2
+    echo "       Please create the user manually (see --help for examples)." >&2
+    exit 1
+fi
+debug "Prerequisite check: User '${VERSIONCHECKER_USER}' exists."
+
+# 2. Check if current user can sudo to versionchecker user without password
+# Use a simple, non-intrusive command like 'id'
+if ! sudo -n -u "${VERSIONCHECKER_USER}" id > /dev/null 2>&1; then
+     echo "Error: Prerequisite failed: Current user '$USER' cannot run commands as '${VERSIONCHECKER_USER}' via passwordless sudo." >&2
+     echo "       Please configure sudoers correctly (see --help for examples)." >&2
+     # Provide more specific sudo error if possible (though output was discarded)
+     # sudo -n -u "${VERSIONCHECKER_USER}" id # Run again to show error message
+     exit 1
+fi
+debug "Prerequisite check: Passwordless sudo to '${VERSIONCHECKER_USER}' works."
+
+# 3. Check for gtimeout on macOS/FreeBSD (done implicitly in run_with_timeout)
+# Pre-check is good practice though
+os_type_check=$(get_os_type)
+if [[ "$os_type_check" == "macos" || "$os_type_check" == "freebsd" ]]; then
+    if ! command -v gtimeout &>/dev/null; then
+         echo "Error: Prerequisite failed: GNU timeout (gtimeout) not found on ${os_type_check}." >&2
+         echo "       Please install coreutils ('brew install coreutils' or 'pkg install coreutils')." >&2
+         exit 1
+    fi
+    debug "Prerequisite check: gtimeout found on ${os_type_check}."
+fi
+
+
+# --- Program Path and Permissions ---
+
+# Resolve program path
+found_path=""
+if [[ "$PROGRAM" == */* ]]; then # If it contains a slash, assume path
+    if command -v "$PROGRAM" &> /dev/null; then
+        found_path=$(command -v "$PROGRAM")
+    fi
+else # Search in PATH
+    if command -v "$PROGRAM" &> /dev/null; then
+        found_path=$(command -v "$PROGRAM")
+    # Try with '3' suffix for python, pip etc. only if base command wasn't found
+    elif command -v "${PROGRAM}3" &> /dev/null; then
+        debug "Program '$PROGRAM' not found, trying '${PROGRAM}3'"
+        PROGRAM="${PROGRAM}3" # Update program name for consistency
+        PROGRAM_BASE=$(basename "$PROGRAM") # Update base name too
+        found_path=$(command -v "$PROGRAM")
+        debug "Found '$PROGRAM' at path: $found_path"
+    fi
+fi
+
+
+if [[ -z "$found_path" ]]; then
     if $SHORT_OUTPUT; then
         echo "${PROGRAM_BASE} not-found"
     else
-        echo "Error: Program '$PROGRAM' not found"
+        echo "Error: Program '$PROGRAM' not found in PATH or as specified."
     fi
     exit 1
 fi
 
-# Check permissions for both current user and versionchecker
-if ! ( [ -x "$program_path" ] && [ -r "$program_path" ] ) || \
-   ! sudo -u versionchecker test -x "$program_path" || \
-   ! sudo -u versionchecker test -r "$program_path"; then
-    if $SHORT_OUTPUT; then
+PROGRAM_PATH="$found_path"
+debug "Resolved program path: $PROGRAM_PATH"
+
+# Check execute permissions for *current user* first (basic sanity)
+if [[ ! -x "$PROGRAM_PATH" ]]; then
+     if $SHORT_OUTPUT; then
         echo "${PROGRAM_BASE} no-permission"
     else
-        echo "Error: No permission to execute '$PROGRAM' (either as current user or versionchecker)"
+        echo "Error: No execute permission for current user on '$PROGRAM_PATH'"
     fi
     exit 1
 fi
-
-# Check if the program exists
-if ! command -v "$PROGRAM" &> /dev/null; then
-    echo "Error: Program '$PROGRAM' not found"
-    exit 1
+# Read permission check (for strings command later)
+if [[ ! -r "$PROGRAM_PATH" ]]; then
+     if $SHORT_OUTPUT; then
+        echo "${PROGRAM_BASE} no-permission"
+    else
+        echo "Warning: No read permission for current user on '$PROGRAM_PATH'. 'strings' method will fail." >&2
+        # Don't exit yet, other methods might work
+    fi
 fi
 
-# Prevent GUI and session interactions
-unset DISPLAY
-unset WAYLAND_DISPLAY
-unset XAUTHORITY
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
+# Check execute permissions for versionchecker user (relies on sudo working)
+if ! sudo -n -u "${VERSIONCHECKER_USER}" test -x "$PROGRAM_PATH"; then
+     if $SHORT_OUTPUT; then
+        echo "${PROGRAM_BASE} no-permission-user"
+    else
+        echo "Error: User '${VERSIONCHECKER_USER}' does not have execute permission on '$PROGRAM_PATH'."
+        echo "       Check file permissions: ls -l $PROGRAM_PATH"
+    fi
+    exit 1
+fi
+debug "Permission checks passed for current user and '${VERSIONCHECKER_USER}'."
+
+
+# --- Version Detection Methods ---
 
 # Array of common version flags
+# Ordered roughly by commonality/specificity
 VERSION_FLAGS=(
     "--version"
-    "-version"
+    "version"   # Some tools use 'version' as a command
     "-v"
     "-V"
+    "--Version" # Case sensitive? Sometimes.
+    "-version"  # Java style
     "--ver"
     "-ver"
-    "version"
 )
 
-VERSION_FLAGS=(
-    "-version"
-)
+VERSION_FOUND=false
+VERSION_OUTPUT=""
 
-# Function to extract version number from output
-extract_version() {
-    local output="$1"
-    local version=""
-    
-    # Try X.Y.Z format first
-    version=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n1)
-    
-    # If not found, try X.Y format
-    if [ -z "$version" ]; then
-        version=$(echo "$output" | grep -oE "[0-9]+\.[0-9]+" | head -n1)
-    fi
-    
-    echo "$version"
-}
-
-# Function to extract version flag from help output
-extract_version_flag_from_help() {
-    local help_output="$1"
-    local version_flag
-    
-    # Look for common patterns in help output that indicate version flags
-    version_flag=$(echo "$help_output" | grep -oE -- '-(-)?v(ersion)?|--version' | head -n1)
-    
-    if [ -n "$version_flag" ]; then
-        echo "$version_flag"
-        return 0
-    fi
-    return 1
-}
-
-# 1. First try common version flags
-debug "Trying common version flags"
+# Method 1: Try common version flags
+debug "Method 1: Trying common version flags..."
 for flag in "${VERSION_FLAGS[@]}"; do
-    debug "Testing flag: $flag"
-    debug "program: $PROGRAM"
-    debug "PROGRAM_BASE: $PROGRAM_BASE"
-    if output=$(try_version_flag "$PROGRAM" "$flag" "$PROGRAM_BASE"); then
-        if $SHORT_OUTPUT; then
-            version=$(extract_version "$output")
-            if [ -n "$version" ]; then
-                echo "${PROGRAM_BASE} ${version}"
-                exit 0
-            fi
+    debug "Trying flag: $flag"
+    # Assign output directly if command succeeds (exit 0)
+    if output=$(try_version_flag "$PROGRAM_PATH" "$flag" "$PROGRAM_BASE"); then
+        debug "Flag '$flag' successful and contained version info."
+        VERSION_FOUND=true
+        VERSION_OUTPUT="$output"
+        METHOD="flag '$flag'"
+        break # Found it, stop trying flags
+    else
+        # Check specific return codes from try_version_flag
+        try_rc=$?
+        if [[ $try_rc -eq 2 ]]; then
+            debug "Flag '$flag' timed out."
+            $SHORT_OUTPUT || echo "Warning: Program '$PROGRAM' timed out with flag '$flag'." >&2
+        elif [[ $try_rc -eq 3 ]]; then
+            debug "Flag '$flag' failed due to sudo permissions."
+            # Error already printed by try_version_flag
+            exit 1 # Exit early for sudo issues
+        elif [[ $try_rc -eq 1 ]]; then
+            debug "Flag '$flag' ran but output didn't contain version info."
         else
-            echo "Version information (using $flag):"
-            echo "$output"
-            exit 0
+             debug "Flag '$flag' failed with unexpected code $try_rc."
+             # Potentially exit or just continue
         fi
-    elif [ $? -eq 2 ]; then
-        $SHORT_OUTPUT || echo "Warning: Program '$PROGRAM' timed out with flag '$flag', trying next..."
     fi
 done
 
-# 2. Try to find version flag from help output
-debug "Trying to extract version flag from help output"
-help_output=""
-if help_output=$(timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
-    unset DISPLAY
-    unset WAYLAND_DISPLAY
-    unset XAUTHORITY
-    unset SESSION_MANAGER
-    unset DBUS_SESSION_BUS_ADDRESS
-    \"$PROGRAM\" --help" 2>&1) || \
-   help_output=$(timeout_cmd $TIMEOUT_SECONDS sudo -u versionchecker bash -c "
-    unset DISPLAY
-    unset WAYLAND_DISPLAY
-    unset XAUTHORITY
-    unset SESSION_MANAGER
-    unset DBUS_SESSION_BUS_ADDRESS
-    \"$PROGRAM\" -h" 2>&1); then
-    # Only process help output if it doesn't contain error messages
-    if ! echo "$help_output" | grep -q "unrecognized option\|invalid option"; then
-        if version_flag=$(extract_version_flag_from_help "$help_output"); then
-            if output=$(try_version_flag "$PROGRAM" "$version_flag" "$PROGRAM_BASE"); then
-                if $SHORT_OUTPUT; then
-                    version=$(extract_version "$output")
-                    if [ -n "$version" ]; then
-                        echo "${PROGRAM_BASE} ${version}"
-                        exit 0
+# Method 2: Try analyzing help output (if version not found yet)
+if ! $VERSION_FOUND; then
+    debug "Method 2: Trying help flags (--help, -h)..."
+    HELP_FLAGS=("--help" "-h")
+    found_help_output=""
+    for flag in "${HELP_FLAGS[@]}"; do
+         debug "Trying help flag: $flag"
+         # We only care if the command exits successfully (or potentially with error code 1 if it prints help then exits)
+         # We don't need contains_version_info here, just capture the output
+         if output=$(try_version_flag "$PROGRAM_PATH" "$flag" "$PROGRAM_BASE"); then
+             # Command exited 0 and *might* contain version info itself
+             debug "Help flag '$flag' ran successfully and output contained version-like info."
+             VERSION_FOUND=true
+             VERSION_OUTPUT="$output"
+             METHOD="help flag '$flag' (direct)"
+             break
+         else
+            try_rc=$?
+            # Check if it failed with code 1 (common for help output) BUT didn't contain version info
+            if [[ $try_rc -eq 1 ]]; then
+                # Re-run to capture output even on failure code 1, IF it didn't timeout/sudo-fail
+                # Use a slightly different call logic for help capture
+                tmpfile_help=$(mktemp "/tmp/${SCRIPT_NAME}_${PROGRAM_BASE}_help_XXXXXX")
+                trap 'cleanup "$tmpfile_help"' EXIT INT TERM HUP
+                debug "Re-running help flag '$flag' to capture output despite non-zero exit..."
+                help_cmd_array=(sudo -n -u "${VERSIONCHECKER_USER}" env -i HOME="/tmp" LC_ALL=C PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin" "$PROGRAM_PATH" "$flag")
+                run_with_timeout "$TIMEOUT_SECONDS" "${help_cmd_array[@]}" > "$tmpfile_help" 2>&1
+                help_rc=$?
+                if [[ $help_rc -ne 124 && $help_rc -ne 3 ]]; then # Avoid timeout/sudo loops
+                    found_help_output=$(cat "$tmpfile_help")
+                    debug "Captured help output (exit code $help_rc):"
+                    debug "$found_help_output"
+                    # Check if THIS output contains a version string (less likely but possible)
+                    if contains_version_info "$found_help_output" "$PROGRAM_BASE"; then
+                         VERSION_FOUND=true
+                         VERSION_OUTPUT="$found_help_output"
+                         METHOD="help flag '$flag' (captured)"
+                         cleanup "$tmpfile_help"
+                         trap - EXIT INT TERM HUP
+                         break
                     fi
-                else
-                    echo "Version information (found flag '$version_flag' in help):"
-                    echo "$output"
-                    exit 0
                 fi
+                 cleanup "$tmpfile_help"
+                 trap - EXIT INT TERM HUP
+            elif [[ $try_rc -eq 2 ]]; then
+                debug "Help flag '$flag' timed out."
+                 $SHORT_OUTPUT || echo "Warning: Program '$PROGRAM' timed out with help flag '$flag'." >&2
+            elif [[ $try_rc -eq 3 ]]; then
+                 debug "Help flag '$flag' failed due to sudo permissions."
+                 exit 1
             fi
-        fi
-    fi
+         fi
+    done
+    # TODO: Could add logic here to parse 'found_help_output' for a version *flag* (e.g., grep for --version)
+    # and then re-run try_version_flag with THAT flag, but it adds complexity.
 fi
 
-# 3. Try using dpkg -l if available
-debug "Checking package manager"
-if have_pkg_manager; then
-    version=$(get_package_version "${PROGRAM_BASE}")
-    if [ -n "$version" ]; then
-        if $SHORT_OUTPUT; then
-            echo "${PROGRAM_BASE} ${version}"
-            exit 0
-        else
-            echo "Version information (found in dpkg database):"
-            echo "$dpkg_output"
-            exit 0
-        fi
-    fi
-fi
 
-# 4. Try using strings command
-debug "Trying strings command"
-if command -v strings &> /dev/null; then
-    program_path=$(which "$PROGRAM")
-    version_info=$(strings "$program_path" | grep -i "version" | grep -E "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -n1)
-    if [ -n "$version_info" ]; then
-        if $SHORT_OUTPUT; then
-            version=$(extract_version "$version_info")
-            if [ -n "$version" ]; then
-                echo "${PROGRAM_BASE} ${version}"
-                exit 0
+# Method 3: Try package manager (if version not found yet)
+if ! $VERSION_FOUND; then
+    debug "Method 3: Trying package manager..."
+    if have_pkg_manager; then
+        pkg_version=$(get_package_version "$PROGRAM_BASE") # Base name often works best here
+        if [[ -n "$pkg_version" ]]; then
+            debug "Package manager found version: $pkg_version"
+            VERSION_FOUND=true
+            # Format output for consistency
+            VERSION_OUTPUT="${PROGRAM_BASE} version ${pkg_version} (from package manager)"
+            # Extract just the version number if short output requested
+            if $SHORT_OUTPUT; then
+                VERSION_OUTPUT="${PROGRAM_BASE} ${pkg_version}"
             fi
+            METHOD="package manager"
         else
-            echo "Version information (found in binary strings):"
-            echo "$version_info"
-            exit 0
-        fi
-    fi
-    debug "Trying to extract version flag from help output"
-fi
-
-# 5. Last resort: try running without arguments
-debug "Trying without arguments"
-if output=$(try_version_flag "$PROGRAM" "" "$PROGRAM_BASE"); then
-    if $SHORT_OUTPUT; then
-        version=$(extract_version "$output")
-        if [ -n "$version" ]; then
-            echo "${PROGRAM_BASE} ${version}"
-            exit 0
+            debug "Package manager did not find version info for '$PROGRAM_BASE' or its path."
         fi
     else
-        echo "Version information (no flag):"
-        echo "$output"
-        exit 0
+        debug "No supported package manager found or available."
     fi
-elif [ $? -eq 2 ]; then
-    $SHORT_OUTPUT || echo "Warning: Program '$PROGRAM' timed out without flags"
 fi
 
-# If we get here, we couldn't find version information
-if $SHORT_OUTPUT; then
-    echo "${PROGRAM_BASE} undetermined"
-else
-    echo "Could not determine version information for '$PROGRAM'"
+# Method 4: Try strings command (if version not found yet)
+if ! $VERSION_FOUND; then
+    debug "Method 4: Trying strings command..."
+    if command -v strings &> /dev/null; then
+        if [[ -r "$PROGRAM_PATH" ]]; then # Check read permission again
+             # Look for patterns like "Version", "vX.Y", potentially near the program name
+             # Be cautious as this can find unrelated strings
+             strings_output=$(strings "$PROGRAM_PATH")
+             # Try finding a single, clear version string first
+             version_in_strings=$(echo "$strings_output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-.][a-zA-Z0-9_]+)*' | sort -u)
+             num_versions=$(echo "$version_in_strings" | wc -l)
+
+             if [[ $num_versions -eq 1 ]]; then
+                 debug "Found unique version string '$version_in_strings' in binary."
+                 VERSION_FOUND=true
+                 VERSION_OUTPUT="${PROGRAM_BASE} version ${version_in_strings} (from strings)"
+                  if $SHORT_OUTPUT; then
+                    VERSION_OUTPUT="${PROGRAM_BASE} ${version_in_strings}"
+                 fi
+                 METHOD="strings (unique version)"
+            else
+                 # More complex: Look for lines containing "version" AND a number pattern
+                 version_info=$(echo "$strings_output" | grep -iE 'version.*[0-9]+\.[0-9]+' | head -n1)
+                 if [[ -n "$version_info" ]]; then
+                    extracted_ver=$(extract_version "$version_info")
+                    if [[ -n "$extracted_ver" ]]; then
+                        debug "Found potential version '$extracted_ver' near 'version' keyword in strings: $version_info"
+                        VERSION_FOUND=true
+                        VERSION_OUTPUT="${PROGRAM_BASE} version ${extracted_ver} (from strings: '${version_info}')"
+                         if $SHORT_OUTPUT; then
+                           VERSION_OUTPUT="${PROGRAM_BASE} ${extracted_ver}"
+                        fi
+                        METHOD="strings (keyword)"
+                    fi
+                 fi
+            fi
+        else
+             debug "Cannot read '$PROGRAM_PATH', skipping strings."
+        fi
+    else
+        debug "strings command not found."
+    fi
 fi
-exit 1
+
+# Method 5: Try running with no arguments (last resort, less reliable)
+if ! $VERSION_FOUND; then
+    debug "Method 5: Trying execution with no arguments..."
+    # Treat empty flag as no arguments
+    if output=$(try_version_flag "$PROGRAM_PATH" "" "$PROGRAM_BASE"); then
+        debug "No-argument execution successful and contained version info."
+        VERSION_FOUND=true
+        VERSION_OUTPUT="$output"
+        METHOD="no arguments"
+    else
+        try_rc=$?
+        if [[ $try_rc -eq 2 ]]; then
+            debug "No-argument execution timed out."
+            $SHORT_OUTPUT || echo "Warning: Program '$PROGRAM' timed out when run with no arguments." >&2
+        elif [[ $try_rc -eq 3 ]]; then
+            debug "No-argument execution failed due to sudo permissions."
+            exit 1
+        else
+             debug "No-argument execution failed or didn't contain version info (exit code $try_rc)."
+        fi
+    fi
+fi
+
+# --- Final Output ---
+
+debug "Finished all methods. Version found: $VERSION_FOUND"
+
+if $VERSION_FOUND; then
+    debug "Final raw output: $VERSION_OUTPUT"
+    debug "Determined by method: $METHOD"
+    if $SHORT_OUTPUT; then
+        # If output already formatted by package manager, use it
+        if [[ "$METHOD" == "package manager" || "$METHOD" == "strings (unique version)" || "$METHOD" == "strings (keyword)" ]]; then
+             echo "$VERSION_OUTPUT" # Already formatted as "prog version"
+        else
+             # Extract version number from the captured output
+             version=$(extract_version "$VERSION_OUTPUT")
+             if [[ -n "$version" ]]; then
+                 echo "${PROGRAM_BASE} ${version}"
+             else
+                 # Fallback if extraction fails but we thought we found something
+                 echo "${PROGRAM_BASE} found-but-unparsed"
+             fi
+        fi
+    else
+        echo "Version information for '${PROGRAM}' (found via: ${METHOD}):"
+        # Print the captured output, ensuring it ends with a newline
+        printf "%s\n" "$VERSION_OUTPUT"
+    fi
+    exit 0
+else
+    if $SHORT_OUTPUT; then
+        echo "${PROGRAM_BASE} undetermined"
+    else
+        echo "Error: Could not determine version information for '$PROGRAM'."
+    fi
+    exit 1
+fi

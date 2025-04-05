@@ -1,71 +1,111 @@
-.TH VERSION 1 "2025" "Linux" "User Commands"
+.\" Man page for the 'version' command
+.\" Written using groff syntax.
+.TH VERSION 1 "[DATE]" "Version Utility" "User Commands"
 .SH NAME
-version \- determine version information of executables
+version \- determine version information of command-line programs
 .SH SYNOPSIS
 .B version
-[\fB\-s\fR|\fB\-\-short\fR] \fIprogram\fR
-.PP
-.B vv
-\fIprogram\fR
+[\fB\-h\fR|\fB\-\-help\fR] [\fB\-v\fR|\fB\-\-version\fR] [\fB\-d\fR|\fB\-\-debug\fR] [\fB\-s\fR|\fB\-\-short\fR] \fI<program-name>\fR
 .SH DESCRIPTION
 .B version
-attempts to determine the version of an executable program using various methods.
-It tries different version flags, checks package information, and analyzes binary strings
-to find version information.
+attempts to determine the version of a specified command-line executable using various methods. It safely executes the target program with different flags under a dedicated unprivileged user ('versionchecker'), checks relevant package manager databases, and analyzes binary strings if necessary.
 .PP
-The script runs programs in a safe manner using a dedicated unprivileged user and
-prevents any GUI-related interactions.
+It is designed primarily for CLI programs. While it might be attempted on GUI programs, they will likely time out or fail without providing version information through this tool.
+.PP
+The installation script suggests creating an alias \fBvv\fR as a shortcut for \fBversion \-s\fR. If created, it can be used as: \fBvv\fR \fI<program-name>\fR.
 .SH OPTIONS
 .TP
 .BR \-s ", " \-\-short
-Output only the program name and version number in format "program version".
-If version cannot be determined, outputs "program undetermined".
-If program is GUI-based, outputs "program gui-program".
-If program lacks permissions, outputs "program no-permission".
+Output only the program name and version number, separated by a space (e.g., "git 2.34.1"). If the version cannot be determined, outputs "<program> undetermined". Other possible status outputs in short mode include: "<program> not-found", "<program> no-permission" (current user lacks execute permission), "<program> no-permission-user" ('versionchecker' user lacks execute permission), "<program> found-but-unparsed" (output found but version extraction failed).
+.TP
+.BR \-d ", " \-\-debug
+Enable verbose debug output to standard error, showing internal steps and command outputs.
+.TP
+.BR \-h ", " \-\-help
+Display a help message summarizing usage and options, then exit.
+.TP
+.BR \-v ", " \-\-version
+Display the version number of the \fBversion\fR script itself, then exit.
+.SH PREREQUISITES
+For \fBversion\fR to function correctly, the following prerequisites must be met (typically handled by the administrator during installation):
+.IP \(bu 2
+A dedicated, non-privileged user named \fBversionchecker\fR must exist on the system. This user should have a non-interactive shell (e.g., /sbin/nologin, /usr/bin/false).
+.IP \(bu 2
+The user(s) running the \fBversion\fR command must have passwordless \fBsudo\fR permission to execute commands as the \fBversionchecker\fR user. This is configured in \fB/etc/sudoers\fR or a file within \fB/etc/sudoers.d/\fR (location may vary, e.g., \fB/usr/local/etc/sudoers.d/\fR on FreeBSD). The rule should resemble:
+.br
+\fI<your_username>\fR ALL=(versionchecker) NOPASSWD: ALL
+.IP \(bu 2
+On macOS and FreeBSD, the GNU \fBgtimeout\fR command must be installed and available in the PATH. This is typically provided by the \fBcoreutils\fR package (\fBbrew install coreutils\fR on macOS, \fBpkg install coreutils\fR on FreeBSD). Linux systems generally use the standard \fBtimeout\fR command, also from \fBcoreutils\fR.
 .SH "VERSION DETECTION METHODS"
-The script attempts to find version information in the following order:
-.PP
+The script attempts to find version information using the following methods, in approximately this order:
 .IP 1. 4
-Common version flags (--version, -version, -v, -V, --ver, -ver, version)
+Trying common version flags (e.g., \fB\-\-version\fR, \fB\-v\fR, \fB\-V\fR, \fBversion\fR command).
 .IP 2. 4
-Analysis of --help output to find version flags
+Analyzing output from help flags (e.g., \fB\-\-help\fR, \fB\-h\fR) for embedded version information or clues about specific version flags.
 .IP 3. 4
-Package management system (dpkg) query
+Querying the system's package manager if available and supported (dpkg on Debian/Ubuntu, brew on macOS, pkg on FreeBSD) for the installed package version corresponding to the program path.
 .IP 4. 4
-Binary string analysis
+Searching the program's binary file using \fBstrings\fR(1) for plausible version number patterns (e.g., X.Y.Z).
 .IP 5. 4
-Execution without arguments
+Executing the program with no arguments (less reliable, as a last resort).
 .SH "SECURITY FEATURES"
-.IP \[bu] 2
-Uses dedicated unprivileged user 'versionchecker'
-.IP \[bu] 2
-Unsets display-related environment variables
-.IP \[bu] 2
-Implements command timeout
-.IP \[bu] 2
-Checks executable permissions
+.IP \(bu 2
+Runs target programs via \fBsudo\fR as the dedicated unprivileged user \fBversionchecker\fR.
+.IP \(bu 2
+Uses \fBenv \-i\fR to run target programs in a minimal, clean environment.
+.IP \(bu 2
+Explicitly unsets potentially sensitive or interaction-related environment variables (e.g., DISPLAY, SESSION_MANAGER, DBUS_SESSION_BUS_ADDRESS).
+.IP \(bu 2
+Implements a short command timeout (default 2 seconds via \fBtimeout\fR(1) or \fBgtimeout\fR(1)) to prevent hangs.
+.IP \(bu 2
+Checks execute permissions for both the running user and the \fBversionchecker\fR user before attempting execution.
 .SH EXAMPLES
 .TP
-Check Python version:
-.B version python
+Check Python version (long output):
+.B version python3
 .TP
 Get short version output for git:
-.B version -s git
+.B version --short git
 .TP
-Check version of a GUI program:
-.B version firefox
+Use the optional alias (if configured):
+.B vv curl
+.TP
+Debug the version check process for 'node':
+.B version -d node
 .SH "EXIT STATUS"
 .TP
 .B 0
-Version information was successfully determined
+Success (version information was found and displayed).
 .TP
 .B 1
-Version information could not be determined or error occurred
+Error (e.g., program not found, required permissions missing, prerequisites not met) or version information could not be determined.
+.TP
+.B 2
+Invalid usage (e.g., unknown option, missing program name).
+.SH FILES
+.TP
+\fI/usr/local/bin/version\fR
+The executable script.
+.TP
+\fI/usr/local/share/man/man1/version.1.gz\fR
+This manual page.
+.TP
+\fI/etc/sudoers\fR, \fI/etc/sudoers.d/\fR
+Files potentially containing the required sudo rule (see PREREQUISITES). Location may vary by OS.
+.SH "SEE ALSO"
+.BR sudoers (5),
+.BR sudo (8),
+.BR timeout (1),
+.BR gtimeout (1),
+.BR strings (1),
+.BR dpkg-query (1),
+.BR brew (1),
+.BR pkg (8)
 .SH AUTHOR
 Written by [Sasu Welling]
 .SH BUGS
-Report bugs to [https://github.com/sasuw/version]
+Report bugs at [https://github.com/sasuw/version]
 .SH COPYRIGHT
-Copyright \(co 2025 [Sasu Welling]
+Copyright \(co 2024 [Sasu Welling]
 .br
-License [MIT License]
+License: MIT License

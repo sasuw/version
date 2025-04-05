@@ -1,158 +1,149 @@
 # version
 
-A command-line tool to determine version information of command line executable programs on Linux, *BSD and MacOS. No more guessing, is it `-version`, `--version`, `-V` or even just `version`!
+A command-line tool to determine version information of command-line executable programs on Linux, macOS, and FreeBSD. No more guessing: is it `-version`, `--version`, `-v`, `-V`, or even just `version`?
+
+This tool prioritizes safety by running target programs with minimal privileges and strict timeouts.
 
 ## Features
 
-### Multiple version detection methods
-  - Common version flags (`--version`, `-v`, etc.)
-  - Help output analysis
-  - Package management query
-  - Binary string analysis
-### Safe execution
-  - Uses dedicated unprivileged user
-  - Prevents GUI program execution
-  - Implements command timeout
-  - Checks executable permissions
-### Two output formats
-  - Detailed with version information source
-  - Short format showing just program and version
+*   **Multiple version detection methods:**
+  *   Common version flags (`--version`, `-v`, etc.)
+  *   Analysis of help output (`--help`, `-h`)
+  *   Query system package managers (dpkg, brew, pkg)
+  *   Binary string analysis (`strings`)
+  *   Execution without arguments (last resort)
+*   **Safe execution:**
+  *   Runs target programs as a dedicated unprivileged user (`versionchecker`) via `sudo`.
+  *   Uses a minimal, sanitized environment (`env -i`).
+  *   Implements short command timeouts to prevent hangs.
+  *   Checks executable permissions before attempting runs.
+*   **Flexible output:**
+  *   Detailed output including the method used to find the version.
+  *   Short format showing just program name and version (ideal for scripting).
+
+## Prerequisites
+
+Before installing and using `version`, ensure the following requirements are met:
+
+1.  **Operating System:** Linux (Debian/Ubuntu, RHEL/Fedora derivatives), macOS, or FreeBSD.
+2.  **Git:** Required to clone the repository.
+3.  **sudo Access:** You need `sudo` privileges on your machine to run the installation script.
+4.  **Coreutils (`timeout`/`gtimeout`):**
+  *   **Linux:** The `timeout` command (part of `coreutils`) is usually pre-installed. If not, install `coreutils` using your package manager (e.g., `sudo apt install coreutils`, `sudo yum install coreutils`).
+  *   **macOS/FreeBSD:** The `gtimeout` command (part of `coreutils`) is required. The installer will check for it. If missing on macOS, you'll be instructed to install it via Homebrew (`brew install coreutils`). On FreeBSD, the installer will attempt to install it via `pkg` if missing.
+5.  **Manual Sudo Configuration (Post-Installation):** This is crucial for the script to function. After installation, the user(s) who will run the `version` command **must** be granted passwordless `sudo` permission to run commands *as* the `versionchecker` user. You will need to add a rule to `/etc/sudoers` (or a file in `/etc/sudoers.d/`) using `visudo`. The rule looks like this:
+    ```
+    # Allow <your_username> to run any command as versionchecker without a password
+    <your_username> ALL=(versionchecker) NOPASSWD: ALL
+    ```
+    Replace `<your_username>` with the actual username. (The sudoers path might be `/usr/local/etc/sudoers` on FreeBSD).
 
 ## Installation
 
-The provided install script
-- creates the user `versionchecker` which is used to launch the program to check
-- copies the version.sh script to `/usr/bin`
-- creates an alias `vv` for the 
-- copies the man page file to `/usr/local/share/man/man1`
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/sasuw/version.git
+    cd version
+    ```
 
-### Preparation
+2.  **Navigate to the scripts directory:**
+    ```bash
+    cd scripts
+    ```
 
-#### All platforms
+3.  **Run the installer with sudo:**
+    ```bash
+    sudo ./install.sh
+    ```
 
-`git clone` this project with
-```bash
-git clone https://github.com/sasuw/version
-```
-`cd` yourselfo to the scripts directory in the project
-```bash
-cd version/scripts
-```
+**What the installer does:**
 
-### Install using the provided install script
+*   Checks for and attempts to install the `coreutils` dependency (`timeout`/`gtimeout`) if missing and possible (Linux/FreeBSD). On macOS, it checks and instructs you to install `coreutils` via Homebrew if needed, then exits.
+*   Safely creates the dedicated, non-privileged user `versionchecker` with no login shell.
+*   Copies the `version` script to `/usr/local/bin/version` and makes it executable.
+*   Copies the man page to `/usr/local/share/man/man1/version.1` and compresses it.
+*   Verifies the installation of files and user.
 
-#### MacOS
+**Post-Installation Steps (Manual):**
 
-##### Install pre-requisites
+1.  **(Required)** Configure the `sudoers` rule as described in the **Prerequisites** section to allow your user to run commands as `versionchecker`. The `version` command will **not work** without this step.
+2.  **(Optional)** Add a convenient alias (like `vv` for `version -s`) to your shell's configuration file (`~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`, etc.):
+    ```bash
+    # For Bash/Zsh:
+    alias vv='version -s'
 
-*Either* install `timeout` from GNU Coreutils manually in your chosen way *or* install [Homebrew](https://brew.sh/) if not already installed (so that the install script can install the missing dependency if necessary)
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-#### All platforms
+    # For Fish:
+    alias vv 'version -s'
+    ```
+    Remember to source your config file or restart your shell after adding the alias.
 
-#### Run the installer
-```bash
-sudo ./install.sh
-```
+## Uninstallation
 
-### Uninstalling
+1.  Navigate to the `scripts` directory within the cloned repository.
+2.  Run the uninstall command with sudo:
+    ```bash
+    sudo ./install.sh --uninstall
+    ```
 
-#### All platforms
+This will remove:
+*   The `/usr/local/bin/version` script.
+*   The `/usr/local/share/man/man1/version.1.gz` man page.
+*   The `versionchecker` user.
 
-```bash
-sudo ./install.sh --uninstall
-```
+**Manual Cleanup Required:**
+*   Remove the `sudoers` rule you added manually.
+*   Remove any aliases you added to your shell configuration.
+*   Dependencies (like `coreutils`) are *not* removed automatically. You can remove them using your package manager if no longer needed.
 
 ## Usage
 
-The script can be used in two ways:
-
-1. Full command:
 ```bash
+# General syntax
+version [options] <program-name>
+
+# Get detailed version info for python3
 version python3
-version --short python3
+
+# Get short version info for git
+version -s git
+version --short git
+
+# Use the optional alias (if configured)
+vv curl
+
+# Show help
+version -h
+version --help
+
+# Show version script's own version
+version -v
+version --version
+
+# Enable debug output
+version -d <program-name>
+
+# Get short version info for git
+version -s git
+version --short git
+
+# Show version script's own version
+version -v
+version --version
 ```
-2. Quick alias:
-```bash
-vv python3  # equivalent to 'version --short python3'
-```
-
-Basic usage:
-
-```bash
-./version program_name
-```
-Short output format:
-```bash
-./version -s program_name
-```
-
-## Examples
-Detailed output:
-
-```bash
-$ ./version python3
-Version information (using --version):
-Python 3.9.5
-```
-Short output:
-```bash
-$ ./version -s git
-git 2.34.1
-```
-Special cases (short format):
-
-```bash
-$ ./version -s nonexistent
-nonexistent not-found
-
-$ ./version -s firefox
-firefox gui-program
-
-$ ./version -s restricted-program
-restricted-program no-permission
-
-$ ./version -s unknown-version
-unknown-version undetermined
-```
-
-## How It Works
-The script attempts to determine program versions using these methods, in order:
-- Tries common version flags
-- Analyzes `--help` output for version flags
-- Queries package management system (currently only `dpkg` on Linux)
-- Analyzes binary strings
-- Attempts execution without arguments
-
-All program executions are performed as unprivileged 'versionchecker' user
-- With display-related environment variables unset
-- With a timeout to prevent hanging
-- With proper permission checks
-
-## Security Features
-- Creates and uses dedicated unprivileged user 'versionchecker'
-- Unsets display-related environment variables to prevent GUI launching
-- Implements command timeout to prevent hanging
-- Checks executable permissions for both current user and versionchecker
-- Safely handles program output and error conditions
-
-## System Requirements
-
-- Linux (Debian/RedHat based), MacOS, or FreeBSD
-- Root/sudo access for installation (to add dedicated `versionchecker` user for more security)
-- GNU coreutils (for timeout command)
-  - Installed by default on Linux
-  - Installed via `brew` (Homebrew) on MacOS
-  - Installed via `pkg` on FreeBSD
 
 ## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
-
 If you have an issue with `version` not working for a specific program, please specify the OS, the program version and how to install it or find it if it is not a part of the OS default programs. Also provide the manual steps for finding the program version. There are many programs out there, for which it is not possible to find a version, as they are not versioned.
+
+## Use the optional alias (if configured)
+vv curl
 
 ## License
 MIT License
+
+## Show help
+version -h
+version --help
 
 ## Author
 Sasu Welling

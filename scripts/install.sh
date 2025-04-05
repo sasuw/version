@@ -1,377 +1,427 @@
 #!/bin/bash
 
+# install.sh - Installer for the 'version' utility
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+# Treat unset variables as an error when substituting.
+# set -u # Disable for now, SUDO_USER might be unset
+# Pipelines return status of the last command to exit with non-zero status,
+# or zero if all commands exit successfully.
+set -o pipefail
+
+# --- Configuration ---
+# Assuming version.sh is in ../bin relative to install.sh
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
+SOURCE_PROGRAM_PATH="${SCRIPT_DIR}/../bin/version.sh"
+SOURCE_MAN_PATH="${SCRIPT_DIR}/../doc/man/version.1"
 
-# Function to add alias to shell config files
-add_alias() {
-    local alias_line="alias vv='version -s'"
-    local real_user=$(get_real_user)
-    local user_home
-    
-    case "$(get_os_type)" in
-        "linux"|"freebsd")
-            user_home=$(getent passwd "$real_user" | cut -d: -f6)
-            ;;
-        "macos")
-            user_home=$(dscl . -read "/Users/$real_user" NFSHomeDirectory | awk '{print $2}')
-            ;;
-    esac
+INSTALL_DIR="/usr/local/bin"
+MAN_DIR="/usr/local/share/man/man1"
+PROGRAM_NAME="version"
+MAN_PAGE_NAME="${PROGRAM_NAME}.1"
+VERSIONCHECKER_USER="versionchecker"
 
-    # Common shell config files
-    local config_files=(
-        "$user_home/.bashrc"
-        "$user_home/.zshrc"
-        "$user_home/.config/fish/config.fish"
-    )
-
-    echo "Adding 'vv' alias for user $real_user..."
-    
-    for config_file in "${config_files[@]}"; do
-        # Create parent directory if it doesn't exist (for fish config)
-        if [[ "$config_file" == *"config.fish"* ]]; then
-            mkdir -p "$(dirname "$config_file")"
-        fi
-        
-        # If file exists and alias not already present
-        if [ -f "$config_file" ] && ! grep -q "alias vv=" "$config_file"; then
-            # Check if file ends with newline
-            if [ -s "$config_file" ] && [ "$(tail -c1 "$config_file" | wc -l)" -eq 0 ]; then
-                # File doesn't end with newline, add one
-                echo "" >> "$config_file"
-            fi
-            
-            case "$config_file" in
-                *.fish)
-                    echo "alias vv 'version -s'" >> "$config_file"
-                    ;;
-                *)
-                    echo "$alias_line" >> "$config_file"
-                    ;;
-            esac
-            echo "Added alias to $config_file"
-        # If file doesn't exist, create it with the alias
-        elif [ ! -f "$config_file" ]; then
-            case "$config_file" in
-                *.fish)
-                    echo "alias vv 'version -s'" > "$config_file"
-                    ;;
-                *)
-                    echo "$alias_line" > "$config_file"
-                    ;;
-            esac
-            echo "Created $config_file with alias"
-        fi
-    done
-
-    # Set proper ownership
-    chown -R "$real_user:$(id -gn "$real_user")" "$user_home/.config" 2>/dev/null || true
-    for config_file in "${config_files[@]}"; do
-        if [ -f "$config_file" ]; then
-            chown "$real_user:$(id -gn "$real_user")" "$config_file"
-        fi
-    done
-
-    echo "Alias 'vv' has been added to shell configuration files"
-    echo "Please restart your shell or run 'source ~/.bashrc' (or equivalent) to use the alias"
-}
-
-# Function to remove alias during uninstall
-remove_alias() {
-    local real_user=$(get_real_user)
-    local user_home
-    
-    case "$(get_os_type)" in
-        "linux"|"freebsd")
-            user_home=$(getent passwd "$real_user" | cut -d: -f6)
-            ;;
-        "macos")
-            if dscl . -read /Users/versionchecker &>/dev/null; then
-                sudo dscl . -delete /Users/versionchecker
-            fi
-            rm -f /etc/sudoers.d/versionchecker
-            ;;
-    esac
-
-    local config_files=(
-        "$user_home/.bashrc"
-        "$user_home/.zshrc"
-        "$user_home/.config/fish/config.fish"
-    )
-
-    echo "Removing 'vv' alias..."
-    
-    for config_file in "${config_files[@]}"; do
-        if [ -f "$config_file" ]; then
-            case "$config_file" in
-                *.fish)
-                    sed -i.bak '/alias vv '"'"'version -s'"'"'/d' "$config_file" 2>/dev/null || \
-                    sed -i '' '/alias vv '"'"'version -s'"'"'/d' "$config_file" 2>/dev/null
-                    ;;
-                *)
-                    sed -i.bak '/alias vv='"'"'version -s'"'"'/d' "$config_file" 2>/dev/null || \
-                    sed -i '' '/alias vv='"'"'version -s'"'"'/d' "$config_file" 2>/dev/null
-                    ;;
-            esac
-            rm -f "${config_file}.bak"
-            echo "Removed alias from $config_file"
-        fi
-    done
-}
-
-# Function to get the real user when running with sudo
-get_real_user() {
-    if [ -n "$SUDO_USER" ]; then
-        echo "$SUDO_USER"
-    else
-        whoami
-    fi
-}
+# --- Helper Functions ---
 
 # Function to determine OS type
 get_os_type() {
-    case "$(uname)" in
-        "Linux")   echo "linux" ;;
-        "Darwin")  echo "macos" ;;
-        "FreeBSD") echo "freebsd" ;;
-        *)         echo "unknown" ;;
+    # Use uname -s for consistency
+    case "$(uname -s)" in
+        Linux)   echo "linux" ;;
+        Darwin)  echo "macos" ;;
+        FreeBSD) echo "freebsd" ;;
+        *)       echo "unknown" ;;
     esac
 }
 
-# Function to check if running as root/sudo
-check_root() {
-    if [ "$(id -u)" != "0" ]; then
-        echo "This script must be run as root or with sudo"
-        exit 1
-    fi
-}
-
-# Function to check and install dependencies
-install_dependencies() {
-    echo "Checking and installing dependencies..."
-    case "$(get_os_type)" in
-        "linux")
-            if command -v apt-get >/dev/null; then
-                apt-get update
-                apt-get install -y sudo coreutils
-            elif command -v yum >/dev/null; then
-                yum install -y sudo coreutils
-            fi
-            ;;
-            
-        "macos")
-            REAL_USER=$(get_real_user)
-            if ! command -v gtimeout >/dev/null; then
-                if ! command -v brew >/dev/null; then
-                    echo "Homebrew not found. Please install Homebrew first as non-root user:"
-                    echo '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-                    exit 1
-                fi
-                
-                # Install only coreutils for gtimeout
-                if [ "$REAL_USER" != "root" ]; then
-                    echo "Installing coreutils for timeout command..."
-                    su - "$REAL_USER" -c 'brew install coreutils'
-                else
-                    echo "Error: Cannot determine the real user for Homebrew installation"
-                    exit 1
-                fi
-            fi
-            ;;
-            
-        "freebsd")
-            if ! command -v gtimeout >/dev/null; then
-                echo "Installing coreutils for timeout command..."
-                pkg install -y sudo coreutils
-            fi
-            ;;
-    esac
-}
-
-# TODO don't duplicate from version.sh, source or some other solution
-# Function to create versionchecker user
-setup_versionchecker() {
-    echo "Setting up versionchecker user..."
-    case "$(get_os_type)" in
-        "linux")
-            # Only create user if it doesn't already exist
-            if ! id -u versionchecker &>/dev/null; then
-                useradd -r -s /bin/false versionchecker
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
-            fi
-            ;;
-
-        "macos")
-            # Only create user if it doesn't already exist
-            if ! dscl . -read /Users/versionchecker &>/dev/null; then
-                dscl . -create /Users/versionchecker
-                dscl . -create /Users/versionchecker UserShell /bin/false
-                dscl . -create /Users/versionchecker RealName "Version Checker"
-                dscl . -create /Users/versionchecker UniqueID 401
-                dscl . -create /Users/versionchecker PrimaryGroupID 20
-                dscl . -create /Users/versionchecker NFSHomeDirectory /var/empty
-                # Set IsHidden so it doesn't show up on the login screen
-                dscl . -create /Users/versionchecker IsHidden 1
-                #TODO: MacOS check is this the way?
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/bash" > /etc/sudoers.d/versionchecker
-            fi
-            ;;
-
-        "freebsd")
-            # Only create user if it doesn't already exist
-            if ! id -u versionchecker &>/dev/null; then
-                pw useradd versionchecker -d /nonexistent -s /usr/sbin/nologin
-                mkdir -p /usr/local/etc/sudoers.d
-                #TODO: FreeBSD check is this the way?
-                echo "ALL ALL=(versionchecker) NOPASSWD: /bin/sh" > /usr/local/etc/sudoers.d/versionchecker
-            fi
-
-            ;;
-    esac
-}
-
-# Function to install program
-install_program() {
-    echo "Installing version.sh..."
-    local install_dir="/usr/local/bin"
-    local man_dir="/usr/local/share/man/man1"
-    
-    # Create directories if they don't exist
-    mkdir -p "$install_dir"
-    mkdir -p "$man_dir"
-    
-    # Install program
-    cp "$SCRIPT_DIR/../bin/version.sh" "$install_dir/version"
-    chmod 755 "$install_dir/version"
-    
-    # Install and compress man page
-    cp "$SCRIPT_DIR/../doc/man/version.1" "$man_dir/version.1"
-    gzip -f "$man_dir/version.1"
-    
-    # Update man database if needed
-    if command -v mandb >/dev/null; then
-        mandb >/dev/null 2>&1
-    fi
-}
-
-# Function to verify installation
-verify_installation() {
-    echo "Verifying installation..."
-    local errors=0
-    
-    # Check program installation
-    if ! [ -x "/usr/local/bin/version" ]; then
-        echo "Error: Program installation failed"
-        errors=$((errors + 1))
-    fi
-    
-    # Check man page installation
-    if ! [ -f "/usr/local/share/man/man1/version.1.gz" ]; then
-        echo "Error: Man page installation failed"
-        errors=$((errors + 1))
-    fi
-    
-    # Check versionchecker user
-    case "$(get_os_type)" in
-        "linux"|"freebsd")
-            if ! id versionchecker >/dev/null 2>&1; then
-                echo "Error: versionchecker user creation failed"
-                errors=$((errors + 1))
-            fi
-            ;;
-        "macos")
-            if ! dscl . -read /Users/versionchecker >/dev/null 2>&1; then
-                echo "Error: versionchecker user creation failed"
-                errors=$((errors + 1))
-            fi
-            ;;
-    esac
-    
-    # Check sudo configuration
-    if ! sudo -l -U versionchecker >/dev/null 2>&1; then
-        echo "Error: versionchecker sudo configuration failed"
-        errors=$((errors + 1))
-    fi
-    
-    return $errors
-}
-
-
-# Main installation process
-main() {
-    echo "Starting installation of version utility..."
-    
-    # Check if running as root
-    check_root
-    
-    # Store the real user for MacOS
-    REAL_USER=$(get_real_user)
-    if [ "$(get_os_type)" = "macos" ] && [ "$REAL_USER" = "root" ]; then
-        echo "Error: Please run this script with sudo instead of as root"
-        exit 1
-    fi
-    
-    # Install dependencies
-    install_dependencies
-    
-    # Setup versionchecker user
-    setup_versionchecker
-    
-    # Install program and man page
-    install_program
-    
-    # Verify installation
-    if verify_installation; then
-        # Add the alias
-        add_alias
-        
-        echo "Installation completed successfully!"
-        echo "You can now use 'version' command and access its man page with 'man version'"
-        echo "The alias 'vv' has been added for quick version checks (requires shell restart)"
+# Function to get the real user even when running with sudo
+get_real_user() {
+    # $USER is the current user, $SUDO_USER is the user who invoked sudo
+    if [[ -n "${SUDO_USER}" ]]; then
+        echo "${SUDO_USER}"
     else
-        echo "Installation completed with errors. Please check the messages above."
+        # Fallback if not running via sudo (though check_root should prevent this)
+        id -un
+    fi
+}
+
+# Check if running as root/sudo
+check_root() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "Error: This script must be run with sudo or as root." >&2
+        exit 1
+    fi
+     # On macOS, Homebrew operations should be done by the real user.
+     # The script will now just instruct the user, so this check is informative.
+     if [[ "$(get_os_type)" == "macos" ]] && [[ -z "${SUDO_USER}" ]] && [[ "$(id -u)" -eq 0 ]]; then
+         echo "Warning: Running directly as root on macOS is discouraged." >&2
+         echo "         It's recommended to run using 'sudo ./install.sh'" >&2
+         # Allow to continue, but installation might behave unexpectedly if brew is needed.
+     fi
+}
+
+# Check for required commands (like package managers)
+check_command() {
+    if ! command -v "$1" &>/dev/null; then
+        echo "Error: Required command '$1' not found." >&2
+        return 1
+    fi
+    return 0
+}
+
+# --- Installation Steps ---
+
+install_dependencies() {
+    local os_type
+    os_type=$(get_os_type)
+    echo "INFO: Checking dependencies..."
+
+    case "$os_type" in
+        linux)
+            if ! command -v timeout &>/dev/null; then
+                 echo "INFO: 'timeout' command not found (needed by version script)."
+                 if check_command apt-get; then
+                    echo "INFO: Attempting to install 'coreutils' using apt-get..."
+                    apt-get update >/dev/null
+                    apt-get install -y coreutils
+                 elif check_command yum; then
+                     echo "INFO: Attempting to install 'coreutils' using yum..."
+                     yum install -y coreutils
+                 elif check_command dnf; then
+                     echo "INFO: Attempting to install 'coreutils' using dnf..."
+                     dnf install -y coreutils
+                 else
+                     echo "Error: Cannot find 'timeout' and no supported package manager (apt/yum/dnf) found." >&2
+                     echo "       Please install 'coreutils' manually." >&2
+                     exit 1
+                 fi
+            else
+                 echo "INFO: 'timeout' command found."
+            fi
+            ;;
+        macos)
+            if ! command -v gtimeout &>/dev/null; then
+                echo "Error: Dependency missing: GNU timeout ('gtimeout') not found." >&2
+                echo "       The 'version' script requires 'gtimeout' from the 'coreutils' package." >&2
+                if check_command brew; then
+                    local real_user
+                    real_user=$(get_real_user)
+                    echo "       Please install it using Homebrew by running this command as user '$real_user':" >&2
+                    echo >&2 # Empty line for spacing
+                    echo "         brew install coreutils" >&2
+                    echo >&2 # Empty line for spacing
+                else
+                     echo "       Homebrew ('brew') command not found. Please install Homebrew first," >&2
+                     echo "       then install coreutils: brew install coreutils" >&2
+                fi
+                exit 1
+            else
+                 echo "INFO: 'gtimeout' command found."
+            fi
+            ;;
+        freebsd)
+            if ! command -v gtimeout &>/dev/null; then
+                echo "INFO: 'gtimeout' command not found (needed by version script)."
+                 if check_command pkg; then
+                     echo "INFO: Attempting to install 'coreutils' using pkg..."
+                     pkg install -y coreutils
+                 else
+                     echo "Error: Cannot find 'gtimeout' and 'pkg' command not found." >&2
+                     echo "       Please install 'coreutils' manually." >&2
+                     exit 1
+                 fi
+            else
+                echo "INFO: 'gtimeout' command found."
+            fi
+            ;;
+        *)
+            echo "Warning: Skipping dependency check for unknown OS type." >&2
+            ;;
+    esac
+     echo "INFO: Dependency check complete."
+}
+
+# Create the non-privileged user for running checks
+setup_versionchecker_user() {
+    local os_type
+    os_type=$(get_os_type)
+    echo "INFO: Setting up '${VERSIONCHECKER_USER}' user..."
+
+    if id -u "${VERSIONCHECKER_USER}" &>/dev/null; then
+        echo "INFO: User '${VERSIONCHECKER_USER}' already exists. Skipping creation."
+        return 0
+    fi
+
+    case "$os_type" in
+        linux)
+            echo "INFO: Creating system user '${VERSIONCHECKER_USER}' with nologin shell (useradd)..."
+            # -r creates a system user, typically with no home dir and UID < 1000
+            # -s specifies nologin shell
+            useradd -r -s /sbin/nologin "${VERSIONCHECKER_USER}" || \
+            useradd -r -s /usr/sbin/nologin "${VERSIONCHECKER_USER}" || \
+            useradd -r -s /bin/false "${VERSIONCHECKER_USER}" || \
+            { echo "Error: Failed to create user '${VERSIONCHECKER_USER}' using useradd." >&2; exit 1; }
+            ;;
+        macos)
+            echo "INFO: Creating user '${VERSIONCHECKER_USER}' with nologin shell (dscl)..."
+            local next_uid
+            # Find the next available UID above 500
+            next_uid=$(dscl . -list /Users UniqueID | awk '$2 > 500 {uid[$2]=1} END { for (i=501; ; i++) if (!uid[i]) { print i; exit } }')
+            echo "INFO: Assigning UID ${next_uid}..."
+
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" || { echo "Error: dscl failed to create user node." >&2; exit 1; }
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" UserShell /usr/bin/false
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" RealName "Version Checker Service User"
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" UniqueID "${next_uid}"
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" PrimaryGroupID 20 # 'staff' group GID
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" NFSHomeDirectory /var/empty
+            dscl . -create "/Users/${VERSIONCHECKER_USER}" IsHidden 1 # Hide from login screen
+            echo "INFO: User '${VERSIONCHECKER_USER}' created successfully."
+            ;;
+        freebsd)
+            echo "INFO: Creating user '${VERSIONCHECKER_USER}' with nologin shell (pw)..."
+            # -d /nonexistent prevents home dir creation
+            # -s specifies nologin shell
+            pw useradd "${VERSIONCHECKER_USER}" -d /nonexistent -s /usr/sbin/nologin -G nogroup || \
+            { echo "Error: Failed to create user '${VERSIONCHECKER_USER}' using pw." >&2; exit 1; }
+            ;;
+        *)
+            echo "Error: Cannot create user on unknown OS type." >&2
+            exit 1
+            ;;
+    esac
+     echo "INFO: User '${VERSIONCHECKER_USER}' setup complete."
+}
+
+install_program_and_manpage() {
+    echo "INFO: Installing program and man page..."
+
+    # Check if source files exist
+    if [[ ! -f "${SOURCE_PROGRAM_PATH}" ]]; then
+        echo "Error: Source file not found: ${SOURCE_PROGRAM_PATH}" >&2
+        exit 1
+    fi
+     if [[ ! -f "${SOURCE_MAN_PATH}" ]]; then
+        echo "Error: Source man page not found: ${SOURCE_MAN_PATH}" >&2
+        # Allow installation without man page? For now, exit.
+        exit 1
+    fi
+
+    # Create directories if they don't exist
+    echo "INFO: Ensuring install directories exist..."
+    mkdir -p "${INSTALL_DIR}"
+    mkdir -p "${MAN_DIR}"
+
+    # Install program
+    local install_path="${INSTALL_DIR}/${PROGRAM_NAME}"
+    echo "INFO: Copying ${SOURCE_PROGRAM_PATH} to ${install_path}"
+    cp "${SOURCE_PROGRAM_PATH}" "${install_path}"
+    chmod 755 "${install_path}"
+    echo "INFO: Program installed."
+
+    # Install and compress man page
+    local man_install_path="${MAN_DIR}/${MAN_PAGE_NAME}"
+    echo "INFO: Copying ${SOURCE_MAN_PATH} to ${man_install_path}"
+    cp "${SOURCE_MAN_PATH}" "${man_install_path}"
+    echo "INFO: Compressing man page ${man_install_path}"
+    gzip -f "${man_install_path}"
+    echo "INFO: Man page installed."
+
+    # Update man database (optional, runs if mandb exists)
+    if command -v mandb &>/dev/null; then
+        echo "INFO: Updating man database (mandb)..."
+        mandb &>/dev/null || echo "Warning: mandb command failed, but proceeding." >&2
+    fi
+     echo "INFO: Program and man page installation complete."
+}
+
+verify_installation() {
+    local os_type="$1" # Pass OS type to avoid recalculating
+    local errors=0
+    echo "INFO: Verifying installation..."
+
+    # Check program exists and is executable
+    if [[ ! -x "${INSTALL_DIR}/${PROGRAM_NAME}" ]]; then
+        echo "Error: Verification failed: Program '${INSTALL_DIR}/${PROGRAM_NAME}' not found or not executable." >&2
+        errors=$((errors + 1))
+    else
+        echo "INFO: [OK] Program file found and executable."
+    fi
+
+    # Check man page exists
+    if [[ ! -f "${MAN_DIR}/${MAN_PAGE_NAME}.gz" ]]; then
+        echo "Error: Verification failed: Man page '${MAN_DIR}/${MAN_PAGE_NAME}.gz' not found." >&2
+        errors=$((errors + 1))
+    else
+        echo "INFO: [OK] Man page file found."
+    fi
+
+    # Check versionchecker user exists
+    if ! id -u "${VERSIONCHECKER_USER}" &>/dev/null; then
+        echo "Error: Verification failed: User '${VERSIONCHECKER_USER}' does not exist." >&2
+        errors=$((errors + 1))
+    else
+         echo "INFO: [OK] User '${VERSIONCHECKER_USER}' exists."
+    fi
+
+    # Check for gtimeout where needed
+    case "$os_type" in
+        macos|freebsd)
+            if ! command -v gtimeout &>/dev/null; then
+                 echo "Error: Verification failed: Required command 'gtimeout' not found." >&2
+                 errors=$((errors + 1))
+            else
+                echo "INFO: [OK] Required command 'gtimeout' found."
+            fi
+            ;;
+        linux)
+             if ! command -v timeout &>/dev/null; then
+                 echo "Error: Verification failed: Required command 'timeout' not found." >&2
+                 errors=$((errors + 1))
+             else
+                echo "INFO: [OK] Required command 'timeout' found."
+             fi
+            ;;
+    esac
+
+    if [[ "$errors" -gt 0 ]]; then
+        echo "Error: Verification finished with $errors error(s)." >&2
+        return 1
+    else
+         echo "INFO: Verification successful."
+         return 0
+    fi
+}
+
+# --- Main Install Logic ---
+run_install() {
+    local os
+    os=$(get_os_type)
+    echo "Starting installation of '${PROGRAM_NAME}' utility for OS: ${os}"
+    echo "--------------------------------------------------"
+
+    check_root
+    install_dependencies # Exits on macOS if brew install needed
+    setup_versionchecker_user
+    install_program_and_manpage
+
+    echo "--------------------------------------------------"
+    if verify_installation "$os"; then
+        echo
+        echo "Installation successful!"
+        echo
+        echo "You can now use the command: ${PROGRAM_NAME}"
+        echo "Access the manual page with: man ${PROGRAM_NAME}"
+        echo
+        echo "---------------------- IMPORTANT ----------------------"
+        echo "Manual steps required:"
+        echo
+        echo "1. Configure Sudo:"
+        echo "   The '${PROGRAM_NAME}' script needs to run commands as the '${VERSIONCHECKER_USER}' user."
+        echo "   You MUST grant passwordless sudo permission to the user(s) who will run '${PROGRAM_NAME}'."
+        echo "   Add a rule like this to '/etc/sudoers' or a file in '/etc/sudoers.d/'"
+        echo "   (use 'visudo' to edit):"
+        echo
+        echo "   <your_username> ALL=(${VERSIONCHECKER_USER}) NOPASSWD: ALL"
+        echo
+        echo "   Replace <your_username> with the actual login name of the user."
+        echo "   Example for user 'admin': admin ALL=(${VERSIONCHECKER_USER}) NOPASSWD: ALL"
+        echo "   (On FreeBSD, the sudoers path might be /usr/local/etc/sudoers.d/)"
+        echo
+        echo "2. Optional Alias:"
+        echo "   For convenience, you can add an alias for the short output format."
+        echo "   Add this line to your shell configuration file (~/.bashrc, ~/.zshrc, ~/.config/fish/config.fish):"
+        echo
+        echo "   # For bash/zsh:"
+        echo "   alias vv='${PROGRAM_NAME} -s'"
+        echo "   # For fish:"
+        echo "   alias vv '${PROGRAM_NAME} -s'"
+        echo
+        echo "   Remember to restart your shell or source the config file after adding the alias."
+        echo "--------------------------------------------------"
+    else
+        echo
+        echo "Installation failed. Please review the error messages above." >&2
         exit 1
     fi
 }
 
-# Check for uninstall flag
-if [ "$1" = "--uninstall" ]; then
-    echo "Uninstalling version utility..."
+# --- Uninstall Logic ---
+run_uninstall() {
+    local os
+    os=$(get_os_type)
+    echo "Starting uninstallation of '${PROGRAM_NAME}' utility for OS: ${os}"
+    echo "--------------------------------------------------"
     check_root
-    
-    # For MacOS, remove Homebrew packages as real user
-    if [ "$(get_os_type)" = "macos" ]; then
-        REAL_USER=$(get_real_user)
-        if [ "$REAL_USER" != "root" ]; then
-            echo "Removing Homebrew packages..."
-            # Only remove coreutils if no other programs need it
-            # su - "$REAL_USER" -c 'brew remove coreutils'
-        fi
-    fi
-    
+
     # Remove program and man page
-    rm -f /usr/local/bin/version
-    rm -f /usr/local/share/man/man1/version.1.gz
-    
-    # Remove versionchecker user and sudo configuration
-    case "$(get_os_type)" in
-        "linux")
-            userdel versionchecker
-            rm -f /etc/sudoers.d/versionchecker
-            ;;
-        "macos")
-            dscl . -delete /Users/versionchecker
-            rm -f /etc/sudoers.d/versionchecker
-            ;;
-        "freebsd")
-            pw userdel versionchecker
-            rm -f /usr/local/etc/sudoers.d/versionchecker
-            ;;
-    esac
-    
-    remove_alias
-    echo "Uninstallation completed"
-    exit 0
+    echo "INFO: Removing program file: ${INSTALL_DIR}/${PROGRAM_NAME}"
+    rm -f "${INSTALL_DIR}/${PROGRAM_NAME}"
+    echo "INFO: Removing man page: ${MAN_DIR}/${MAN_PAGE_NAME}.gz"
+    rm -f "${MAN_DIR}/${MAN_PAGE_NAME}.gz"
+
+    # Remove versionchecker user
+    if id -u "${VERSIONCHECKER_USER}" &>/dev/null; then
+        echo "INFO: Removing user '${VERSIONCHECKER_USER}'..."
+        case "$os" in
+            linux)
+                userdel "${VERSIONCHECKER_USER}" || echo "Warning: 'userdel ${VERSIONCHECKER_USER}' failed. Manual removal might be needed." >&2
+                ;;
+            macos)
+                 # Ensure user has no running processes first (might require manual intervention)
+                 if pgrep -u "${VERSIONCHECKER_USER}" >/dev/null; then
+                     echo "Warning: Processes running as user '${VERSIONCHECKER_USER}' detected." >&2
+                     echo "         Cannot delete user while processes are running. Please stop them manually." >&2
+                 else
+                     dscl . -delete "/Users/${VERSIONCHECKER_USER}" || echo "Warning: 'dscl . -delete /Users/${VERSIONCHECKER_USER}' failed. Manual removal might be needed." >&2
+                 fi
+                ;;
+            freebsd)
+                 pw userdel "${VERSIONCHECKER_USER}" || echo "Warning: 'pw userdel ${VERSIONCHECKER_USER}' failed. Manual removal might be needed." >&2
+                ;;
+            *)
+                echo "Warning: Cannot automatically remove user on unknown OS type." >&2
+                ;;
+        esac
+    else
+        echo "INFO: User '${VERSIONCHECKER_USER}' not found. Skipping removal."
+    fi
+
+    # NOTE: We do NOT remove the sudoers configuration file automatically,
+    # as it was created manually by the administrator.
+    echo
+    echo "---------------------- REMINDER ----------------------"
+    echo "Manual steps required:"
+    echo
+    echo "1. Remove Sudo Rule:"
+    echo "   If you added a sudo rule for '${PROGRAM_NAME}', remember to remove it manually"
+    echo "   from '/etc/sudoers' or '/etc/sudoers.d/' using 'visudo'."
+    echo "   The rule looked like: <your_username> ALL=(${VERSIONCHECKER_USER}) NOPASSWD: ALL"
+    echo
+    echo "2. Remove Alias:"
+    echo "   If you added the 'vv' alias to your shell configuration file, remove it manually."
+    echo
+    echo "3. Dependencies:"
+    echo "   This script did not remove dependencies like 'coreutils' ('timeout'/'gtimeout')."
+    echo "   You may remove them using your system's package manager if no other"
+    echo "   programs require them (e.g., 'apt-get remove coreutils',"
+    echo "   'brew uninstall coreutils', 'pkg remove coreutils')."
+    echo "--------------------------------------------------"
+    echo "Uninstallation complete."
+}
+
+# --- Script Entry Point ---
+
+if [[ "$1" == "--uninstall" ]]; then
+    run_uninstall
+elif [[ "$1" == "--help" || "$1" == "-h" ]]; then
+     echo "Usage: sudo $0 [--uninstall]"
+     echo "  (no arguments)  Installs the '${PROGRAM_NAME}' utility and prerequisites."
+     echo "  --uninstall     Removes the '${PROGRAM_NAME}' utility and the '${VERSIONCHECKER_USER}' user."
+     exit 0
+else
+    run_install
 fi
 
-# Run main installation
-main
+exit 0
