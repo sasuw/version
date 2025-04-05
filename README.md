@@ -6,18 +6,20 @@ This tool prioritizes safety by running target programs with minimal privileges 
 
 ## Features
 
-*   **Multiple version detection methods:**
+**Multiple version detection methods:**
   *   Common version flags (`--version`, `-v`, etc.)
   *   Analysis of help output (`--help`, `-h`)
   *   Query system package managers (dpkg, brew, pkg)
   *   Binary string analysis (`strings`)
   *   Execution without arguments (last resort)
-*   **Safe execution:**
+    
+**Safe execution:**
   *   Runs target programs as a dedicated unprivileged user (`versionchecker`) via `sudo`.
   *   Uses a minimal, sanitized environment (`env -i`).
   *   Implements short command timeouts to prevent hangs.
   *   Checks executable permissions before attempting runs.
-*   **Flexible output:**
+
+**Flexible output:**
   *   Detailed output including the method used to find the version.
   *   Short format showing just program name and version (ideal for scripting).
 
@@ -29,8 +31,8 @@ Before installing and using `version`, ensure the following requirements are met
 2.  **Git:** Required to clone the repository.
 3.  **sudo Access:** You need `sudo` privileges on your machine to run the installation script.
 4.  **Coreutils (`timeout`/`gtimeout`):**
-  *   **Linux:** The `timeout` command (part of `coreutils`) is usually pre-installed. If not, install `coreutils` using your package manager (e.g., `sudo apt install coreutils`, `sudo yum install coreutils`).
-  *   **macOS/FreeBSD:** The `gtimeout` command (part of `coreutils`) is required. The installer will check for it. If missing on macOS, you'll be instructed to install it via Homebrew (`brew install coreutils`). On FreeBSD, the installer will attempt to install it via `pkg` if missing.
+ 	*   **Linux:** The `timeout` command (part of `coreutils`) is usually pre-installed. If not, install `coreutils` using your package manager (e.g., `sudo apt install coreutils`, `sudo yum install coreutils`).
+  	*   **macOS/FreeBSD:** The `gtimeout` command (part of `coreutils`) is required. The installer will check for it. If missing on macOS, you'll be instructed to install it via Homebrew (`brew install coreutils`). On FreeBSD, the installer will attempt to install it via `pkg` if missing.
 5.  **Manual Sudo Configuration (Post-Installation):** This is crucial for the script to function. After installation, the user(s) who will run the `version` command **must** be granted passwordless `sudo` permission to run commands *as* the `versionchecker` user. You will need to add a rule to `/etc/sudoers` (or a file in `/etc/sudoers.d/`) using `visudo`. The rule looks like this:
     ```
     # Allow <your_username> to run any command as versionchecker without a password
@@ -129,21 +131,21 @@ version --short git
 # Show version script's own version
 version -v
 version --version
+
+## Show help
+version -h
+version --help
+
+## Use the optional alias (if configured)
+vv curl
 ```
 
 ## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 If you have an issue with `version` not working for a specific program, please specify the OS, the program version and how to install it or find it if it is not a part of the OS default programs. Also provide the manual steps for finding the program version. There are many programs out there, for which it is not possible to find a version, as they are not versioned.
 
-## Use the optional alias (if configured)
-vv curl
-
 ## License
 MIT License
-
-## Show help
-version -h
-version --help
 
 ## Author
 Sasu Welling
